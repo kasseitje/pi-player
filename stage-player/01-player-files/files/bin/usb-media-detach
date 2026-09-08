@@ -1,0 +1,16 @@
+#!/bin/bash
+# Called by usb-media@.service on stop (stick removed or unit stopped).
+set -uo pipefail
+
+. /etc/default/player
+
+log() { logger -t usb-media-detach "$*"; echo "usb-media-detach: $*" >&2; }
+
+if mountpoint -q "$USB_MOUNT_DIR"; then
+    # Lazy unmount: the stick may already be physically gone.
+    umount "$USB_MOUNT_DIR" 2>/dev/null || umount -l "$USB_MOUNT_DIR" 2>/dev/null || true
+    log "unmounted $USB_MOUNT_DIR"
+fi
+
+player-playlist || log "no internal media to fall back to"
+player-reload

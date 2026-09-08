@@ -1,0 +1,6 @@
+# Hand USB block devices carrying a filesystem to a systemd unit.
+# Long-running work must not happen in RUN+= (udev kills it), so we only
+# request the unit here and let systemd own the lifecycle.
+ACTION=="add", SUBSYSTEM=="block", SUBSYSTEMS=="usb", KERNEL=="sd*", \
+    ENV{ID_FS_USAGE}=="filesystem", TAG+="systemd", \
+    ENV{SYSTEMD_WANTS}="usb-media@%k.service"

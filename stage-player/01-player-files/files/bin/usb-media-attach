@@ -1,0 +1,46 @@
+#!/bin/bash
+# Called by usb-media@.service when a USB filesystem appears.
+# Argument: kernel device name, e.g. sda1
+set -uo pipefail
+
+. /etc/default/player
+
+DEV="/dev/$1"
+log() { logger -t usb-media-attach "$*"; echo "usb-media-attach: $*" >&2; }
+
+[ -b "$DEV" ] || { log "$DEV is not a block device"; exit 1; }
+
+# Never touch the disk we booted from (relevant if you later boot from USB/NVMe).
+ROOT_SRC="$(findmnt -no SOURCE / || true)"
+ROOT_DISK="$(lsblk -no PKNAME "$ROOT_SRC" 2>/dev/null || true)"
+THIS_DISK="$(lsblk -no PKNAME "$DEV" 2>/dev/null || true)"
+if [ -n "$ROOT_DISK" ] && [ "$ROOT_DISK" = "$THIS_DISK" ]; then
+    log "$DEV lives on the boot disk ($ROOT_DISK) - ignoring"
+    exit 0
+fi
+
+mkdir -p "$USB_MOUNT_DIR"
+
+# Already something mounted there? Leave the first stick to win.
+if mountpoint -q "$USB_MOUNT_DIR"; then
+    log "$USB_MOUNT_DIR already in use - ignoring $DEV"
+    exit 0
+fi
+
+# Read-only mount: the stick is content, never a write target. This also means
+# a yanked stick can never corrupt a filesystem.
+if ! mount -o ro,noatime,nosuid,nodev,noexec "$DEV" "$USB_MOUNT_DIR" 2>/dev/null; then
+    log "failed to mount $DEV at $USB_MOUNT_DIR"
+    exit 1
+fi
+
+log "mounted $DEV read-only at $USB_MOUNT_DIR"
+
+if player-playlist; then
+    player-reload
+else
+    log "no usable media on $DEV; unmounting and reverting to internal media"
+    umount "$USB_MOUNT_DIR" 2>/dev/null || true
+    player-playlist || true
+    player-reload
+fi

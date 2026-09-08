@@ -1,0 +1,26 @@
+# /etc/default/player - tuning for the media loop player.
+# Edit this file and `systemctl restart player.service` to apply.
+
+# Where baked-in fallback media lives (used when no USB stick is present).
+INTERNAL_MEDIA_DIR="/opt/player/media"
+
+# Mount point used for a plugged-in USB stick.
+USB_MOUNT_DIR="/media/usb"
+
+# Generated playlist consumed by mpv (tmpfs, regenerated on every change).
+PLAYLIST="/run/player/playlist.m3u"
+
+# mpv IPC socket used for hot-reloading the playlist without restarting mpv.
+MPV_SOCKET="/run/player/mpv.sock"
+
+# Seconds each still image is displayed. Videos always play their full length.
+IMAGE_DURATION="8"
+
+# Case-insensitive file extensions treated as playable media.
+MEDIA_EXTENSIONS="mp4 mkv mov avi m4v webm jpg jpeg png bmp gif"
+
+# Extra flags appended to the mpv command line (e.g. --shuffle, --volume=0).
+MPV_EXTRA_OPTS=""
+
+# Video output settings. Pi 4 with the vc4-kms-v3d driver on a bare console.
+MPV_VO_OPTS="--vo=gpu --gpu-api=opengl --gpu-context=drm --hwdec=auto-safe"

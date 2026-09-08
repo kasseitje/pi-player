@@ -1,0 +1,31 @@
+#!/bin/bash
+# Hot-reload the playlist into a running mpv via its JSON IPC socket.
+# Falls back to restarting player.service if IPC is unavailable.
+set -uo pipefail
+
+. /etc/default/player
+
+log() { logger -t player-reload "$*"; echo "player-reload: $*" >&2; }
+
+# Wait briefly for the socket - handles a USB stick present at boot racing
+# with mpv startup.
+for _ in $(seq 1 20); do
+    [ -S "$MPV_SOCKET" ] && break
+    sleep 0.5
+done
+
+if [ ! -S "$MPV_SOCKET" ]; then
+    log "mpv IPC socket $MPV_SOCKET not available; restarting player.service"
+    systemctl restart --no-block player.service
+    exit 0
+fi
+
+REPLY_JSON=$(printf '{"command":["loadlist","%s","replace"]}\n' "$PLAYLIST" \
+    | socat -T2 - "UNIX-CONNECT:${MPV_SOCKET}" 2>/dev/null | head -n1)
+
+if echo "$REPLY_JSON" | grep -q '"error":"success"'; then
+    log "playlist reloaded via IPC"
+else
+    log "IPC loadlist failed (reply: ${REPLY_JSON:-none}); restarting player.service"
+    systemctl restart --no-block player.service
+fi

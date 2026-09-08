@@ -1,0 +1,102 @@
+#!/bin/bash
+# Regenerate the active playlist, preferring USB media over internal media.
+# Writes atomically to $PLAYLIST. Does not talk to mpv - see player-reload.
+set -uo pipefail
+
+. /etc/default/player
+
+log() { logger -t player-playlist "$*"; echo "player-playlist: $*" >&2; }
+
+# Build a find(1) expression from the configured extension list.
+build_find_expr() {
+    local first=1
+    FIND_EXPR=()
+    for ext in $MEDIA_EXTENSIONS; do
+        if [ $first -eq 1 ]; then
+            FIND_EXPR+=( -iname "*.${ext}" )
+            first=0
+        else
+            FIND_EXPR+=( -o -iname "*.${ext}" )
+        fi
+    done
+}
+
+# Scan a directory for media files, sorted by name (numeric prefixes win).
+scan_dir() {
+    local dir="$1"
+    build_find_expr
+    find "$dir" -maxdepth 2 -type f \( "${FIND_EXPR[@]}" \) -print 2>/dev/null | sort
+}
+
+# Expand a user-supplied .m3u, making relative entries absolute against its dir.
+expand_m3u() {
+    local m3u="$1" base
+    base="$(dirname "$m3u")"
+    while IFS= read -r line || [ -n "$line" ]; do
+        line="${line%$'\r'}"                       # tolerate CRLF from Windows
+        [ -z "$line" ] && continue
+        case "$line" in \#*) continue ;; esac      # skip comments / #EXTM3U
+        case "$line" in
+            /*) echo "$line" ;;
+            *)  echo "${base}/${line}" ;;
+        esac
+    done < "$m3u"
+}
+
+# ---- choose the media source -------------------------------------------------
+SOURCE=""
+MODE=""
+
+if mountpoint -q "$USB_MOUNT_DIR"; then
+    if [ -f "${USB_MOUNT_DIR}/playlist.m3u" ]; then
+        SOURCE="${USB_MOUNT_DIR}/playlist.m3u"
+        MODE="usb-m3u"
+    elif [ -n "$(scan_dir "$USB_MOUNT_DIR")" ]; then
+        SOURCE="$USB_MOUNT_DIR"
+        MODE="usb-scan"
+    else
+        log "USB mounted at $USB_MOUNT_DIR but contains no playable media"
+    fi
+fi
+
+if [ -z "$SOURCE" ]; then
+    if [ -n "$(scan_dir "$INTERNAL_MEDIA_DIR")" ]; then
+        SOURCE="$INTERNAL_MEDIA_DIR"
+        MODE="internal"
+    else
+        log "no media found on USB or in $INTERNAL_MEDIA_DIR - writing empty playlist"
+        MODE="empty"
+    fi
+fi
+
+# ---- write the playlist atomically -------------------------------------------
+mkdir -p "$(dirname "$PLAYLIST")"
+TMP="$(mktemp "${PLAYLIST}.XXXXXX")"
+trap 'rm -f "$TMP"' EXIT
+
+case "$MODE" in
+    usb-m3u)  expand_m3u "$SOURCE" > "$TMP" ;;
+    usb-scan|internal) scan_dir "$SOURCE" > "$TMP" ;;
+    empty)    : > "$TMP" ;;
+esac
+
+# Drop entries that do not actually exist (stale .m3u lines, unplugged paths).
+if [ -s "$TMP" ]; then
+    VALID="$(mktemp "${PLAYLIST}.XXXXXX")"
+    while IFS= read -r f; do
+        if [ -f "$f" ]; then
+            echo "$f" >> "$VALID"
+        else
+            log "skipping missing file: $f"
+        fi
+    done < "$TMP"
+    mv "$VALID" "$TMP"
+fi
+
+COUNT=$(wc -l < "$TMP" | tr -d ' ')
+mv "$TMP" "$PLAYLIST"
+trap - EXIT
+chmod 0644 "$PLAYLIST"
+
+log "playlist regenerated: mode=$MODE entries=$COUNT source=${SOURCE:-none}"
+[ "$COUNT" -gt 0 ]

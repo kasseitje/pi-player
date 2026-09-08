@@ -1,0 +1,41 @@
+# pi-gen configuration for the media player appliance.
+# Place this file at the ROOT of your pi-gen clone (same level as build.sh).
+#
+# IMPORTANT: architecture and Debian release are chosen by GIT BRANCH, not here.
+#   64-bit (Pi 3/4/5)  -> git checkout arm64      <- use this
+#   32-bit             -> git checkout master
+# Setting ARCH= or RELEASE= here does nothing useful and will trigger
+# "RELEASE does not match the intended option for this branch".
+
+IMG_NAME='pi-player'
+
+# Only build up to our custom stage. stage3/4/5 are the desktop stages and are
+# never touched, so no SKIP files are needed.
+STAGE_LIST='stage0 stage1 stage2 stage-player'
+
+# First user. 01-run-chroot.sh rewrites player.service to match this name.
+FIRST_USER_NAME='pi'
+FIRST_USER_PASS='changeme-before-you-build'
+
+# Do not prompt for a user rename on first boot - this box has no keyboard.
+DISABLE_FIRST_BOOT_USER_RENAME=1
+
+TARGET_HOSTNAME='pi-player'
+LOCALE_DEFAULT='en_GB.UTF-8'
+TIMEZONE_DEFAULT='Europe/Brussels'
+KEYBOARD_KEYMAP='be'
+KEYBOARD_LAYOUT='Belgian'
+
+# Headless access for maintenance.
+ENABLE_SSH=1
+# Key-only auth is strongly preferable if this ever sits on a venue network:
+#PUBKEY_SSH_FIRST_USER='ssh-ed25519 AAAA... you@host'
+#PUBKEY_ONLY_SSH=1
+
+# Optional Wi-Fi. Leave commented for a wired or fully offline unit.
+#WPA_ESSID='your-ssid'
+#WPA_PASSWORD='your-psk'
+#WPA_COUNTRY='BE'
+
+DEPLOY_COMPRESSION='xz'
+COMPRESSION_LEVEL=6

@@ -1,0 +1,12 @@
+# Optional. Place this file (named playlist.m3u) in the ROOT of the USB stick
+# to control playback order explicitly. Without it, the Pi scans the stick and
+# plays everything it finds in filename order.
+#
+# Paths may be relative to the stick root, or absolute.
+# Lines starting with # are ignored.
+
+001_intro.mp4
+002_sponsors.jpg
+003_bloementapijt.mp4
+004_committee.jpg
+005_outro.mp4

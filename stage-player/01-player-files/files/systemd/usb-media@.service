@@ -1,0 +1,14 @@
+[Unit]
+Description=USB media handler for /dev/%i
+# Ties this unit's lifetime to the device: pulling the stick stops the unit,
+# which runs ExecStop and reverts to internal media.
+BindsTo=dev-%i.device
+After=dev-%i.device player.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/usb-media-attach %i
+ExecStop=/usr/local/bin/usb-media-detach %i
+TimeoutStartSec=30
+TimeoutStopSec=30
