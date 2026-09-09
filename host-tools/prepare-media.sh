@@ -14,6 +14,14 @@
 # Overridable via the environment:
 #   IMAGE_DURATION=5  WIDTH=1920  HEIGHT=1080  FPS=30  CRF=20  PRESET=medium
 #   BG=black          PLAYLIST=1  KEEP_NAMES=0
+#   FIT=contain|cover|blur        BLUR_SIGMA=8
+#
+# FIT controls what happens to content whose aspect ratio is not the canvas:
+#   contain  fit inside, bars in BG            (default; nothing is lost)
+#   cover    fill the canvas, crop the overflow (edges ARE lost - brutal on
+#            portrait photos, which lose most of their height)
+#   blur     fill the canvas with a blurred, zoomed copy of the image itself and
+#            lay the whole uncropped image on top (no bars, nothing lost)
 set -uo pipefail
 
 SRC="${1:?usage: prepare-media.sh SRCDIR DSTDIR}"
@@ -28,6 +36,13 @@ PRESET="${PRESET:-medium}"
 BG="${BG:-black}"
 PLAYLIST="${PLAYLIST:-1}"      # also write playlist.m3u
 KEEP_NAMES="${KEEP_NAMES:-0}"  # 1 = keep original names, no NNN_ prefix
+FIT="${FIT:-contain}"          # contain | cover | blur
+BLUR_SIGMA="${BLUR_SIGMA:-8}"  # only used by FIT=blur
+
+case "$FIT" in
+    contain|cover|blur) ;;
+    *) echo "FIT must be contain, cover or blur (got: $FIT)" >&2; exit 1 ;;
+esac
 
 [ -d "$SRC" ] || { echo "no such source directory: $SRC" >&2; exit 1; }
 command -v ffmpeg  >/dev/null || { echo "ffmpeg not found" >&2; exit 1; }
@@ -49,14 +64,46 @@ enc_opts=(
     -movflags +faststart -an
 )
 
-# Fit inside the canvas without cropping, centred, letterboxed with BG.
-# Scaling then overlaying onto a solid canvas (rather than pad) composites
-# alpha instead of discarding it, which matters for RGBA PNGs.
-img_filter="[0:v]scale=${WIDTH}:${HEIGHT}:force_original_aspect_ratio=decrease:flags=lanczos,format=rgba[fg];\
+# The blurred backdrop is produced at 1/8 scale and then scaled back up: a
+# gblur wide enough to look right at 1080p costs far more than the two extra
+# scale passes, and the upscale hides any coarseness in the small blur.
+BW=$(( WIDTH / 8 ))
+BH=$(( HEIGHT / 8 ))
+
+# Images composite onto the solid canvas of input 1 (rather than using pad)
+# because that composites alpha instead of discarding it, which matters for
+# RGBA PNGs. FIT=blur inserts an opaque blurred backdrop between the two.
+case "$FIT" in
+contain)
+    img_filter="[0:v]scale=${WIDTH}:${HEIGHT}:force_original_aspect_ratio=decrease:flags=lanczos,format=rgba[fg];\
 [1:v][fg]overlay=(W-w)/2:(H-h)/2:format=auto,format=yuv420p,setsar=1[v]"
 
-vid_filter="scale=${WIDTH}:${HEIGHT}:force_original_aspect_ratio=decrease:flags=lanczos,\
-pad=${WIDTH}:${HEIGHT}:(ow-iw)/2:(oh-ih)/2:color=${BG},fps=${FPS},format=yuv420p,setsar=1"
+    vid_filter="[0:v]scale=${WIDTH}:${HEIGHT}:force_original_aspect_ratio=decrease:flags=lanczos,\
+pad=${WIDTH}:${HEIGHT}:(ow-iw)/2:(oh-ih)/2:color=${BG},fps=${FPS},format=yuv420p,setsar=1[v]"
+    ;;
+cover)
+    img_filter="[0:v]scale=${WIDTH}:${HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,\
+crop=${WIDTH}:${HEIGHT},format=rgba[fg];\
+[1:v][fg]overlay=(W-w)/2:(H-h)/2:format=auto,format=yuv420p,setsar=1[v]"
+
+    vid_filter="[0:v]scale=${WIDTH}:${HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,\
+crop=${WIDTH}:${HEIGHT},fps=${FPS},format=yuv420p,setsar=1[v]"
+    ;;
+blur)
+    img_filter="[0:v]split=2[bs][fs];\
+[bs]scale=${BW}:${BH}:force_original_aspect_ratio=increase:flags=bilinear,crop=${BW}:${BH},\
+gblur=sigma=${BLUR_SIGMA},scale=${WIDTH}:${HEIGHT}:flags=bicubic,format=rgba[bgi];\
+[1:v][bgi]overlay=0:0:format=auto[bg];\
+[fs]scale=${WIDTH}:${HEIGHT}:force_original_aspect_ratio=decrease:flags=lanczos,format=rgba[fg];\
+[bg][fg]overlay=(W-w)/2:(H-h)/2:format=auto,format=yuv420p,setsar=1[v]"
+
+    vid_filter="[0:v]fps=${FPS},split=2[bs][fs];\
+[bs]scale=${BW}:${BH}:force_original_aspect_ratio=increase:flags=bilinear,crop=${BW}:${BH},\
+gblur=sigma=${BLUR_SIGMA},scale=${WIDTH}:${HEIGHT}:flags=bicubic[bg];\
+[fs]scale=${WIDTH}:${HEIGHT}:force_original_aspect_ratio=decrease:flags=lanczos[fg];\
+[bg][fg]overlay=(W-w)/2:(H-h)/2,format=yuv420p,setsar=1[v]"
+    ;;
+esac
 
 slug() {
     basename "${1%.*}" | tr ' ' '_' | tr -cd '[:alnum:]._-'
@@ -98,12 +145,12 @@ encode_image() {
 encode_video() {
     local in="$1" out="$2"
     ffmpeg -hide_banner -loglevel error -y -i "$in" \
-        -vf "$vid_filter" -map 0:v:0 "${enc_opts[@]}" "$out" 2>/dev/null
+        -filter_complex "$vid_filter" -map "[v]" "${enc_opts[@]}" "$out" 2>/dev/null
 }
 
 echo "source : $SRC"
 echo "target : $DST"
-echo "format : ${WIDTH}x${HEIGHT}@${FPS}  stills=${IMAGE_DURATION}s  crf=${CRF}  preset=${PRESET}"
+echo "format : ${WIDTH}x${HEIGHT}@${FPS}  stills=${IMAGE_DURATION}s  crf=${CRF}  preset=${PRESET}  fit=${FIT}"
 echo
 
 shopt -s nullglob nocaseglob

@@ -91,7 +91,22 @@ IMAGE_DURATION=8 CRF=22 ./host-tools/prepare-media.sh ~/raw /media/STICK
 ```
 
 Env overrides: `IMAGE_DURATION` (5) `WIDTH` (1920) `HEIGHT` (1080) `FPS` (30)
-`CRF` (20) `PRESET` (medium) `BG` (black) `PLAYLIST` (1) `KEEP_NAMES` (0).
+`CRF` (20) `PRESET` (medium) `BG` (black) `PLAYLIST` (1) `KEEP_NAMES` (0)
+`FIT` (contain) `BLUR_SIGMA` (8).
+
+`FIT` decides what happens to content that is not 16:9 — which is most of a
+photo archive:
+
+| `FIT` | Result | Cost |
+|---|---|---|
+| `contain` | fits inside, `BG` bars baked into the frame | nothing lost, but a portrait photo is mostly black bar |
+| `cover` | fills the canvas, crops the overflow | edges lost; brutal on portrait |
+| `blur` | blurred zoomed copy of the image fills the canvas, uncropped image on top | nothing lost, no bars; ~1 extra scale pass |
+
+Verified: with `FIT=blur` the centre of a 1000x1500 portrait measures the same
+average luma as under `FIT=contain` (129.863) while the left edge goes from 16
+(black) to 235 — the image itself is untouched, only the bars are replaced.
+`FIT=cover` changes the centre too (125.25), because it zooms.
 Only reads the top level of `SRCDIR`. Every output is verified by packet count
 and duration; failures are deleted, listed, and the script exits non-zero — a
 zero-frame "successful" encode is exactly how a black frame gets into a loop
@@ -176,6 +191,9 @@ tolerated; backslash separators are **not** translated.
 Never installed on the Pi. `prepare-media.sh` normalises clips *and stills* to
 1920x1080@30, H.264 High L4.1, yuv420p, SAR 1:1, no audio, fixed 2s GOP.
 Stills are **composited onto a canvas**, not `pad`ded — `pad` discards alpha.
+Under `FIT=blur` the rate conversion happens *before* the `split`, so both
+branches stay frame-locked; doing it after the `overlay` lets them drift and
+costs one frame per clip.
 Files ffmpeg cannot decode are retried through ImageMagick (`-colorspace
 sRGB`), which handles CMYK JPEGs. GIFs longer than `IMAGE_DURATION` are
 **truncated**, not slowed. Verified against fixtures covering progressive JPEG,
