@@ -17,7 +17,18 @@ fi
 systemctl set-default multi-user.target
 
 # tty1 belongs to the player, not to a login prompt.
+# Disabling getty@tty1 is NOT sufficient: logind spawns autovt@tty1.service
+# (a separate symlink to getty@.service) whenever VT1 is activated, which grabs
+# the console back after the player stops and blocks the next start. Turning the
+# autovt machinery off entirely is the only reliable fix for a kiosk.
 systemctl disable getty@tty1.service || true
+systemctl mask getty@tty1.service || true
+install -d -m 755 /etc/systemd/logind.conf.d
+cat > /etc/systemd/logind.conf.d/10-player-no-autovt.conf <<'LOGIND'
+[Login]
+NAutoVTs=0
+ReserveVT=0
+LOGIND
 
 systemctl enable player.service
 

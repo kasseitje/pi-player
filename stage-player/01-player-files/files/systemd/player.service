@@ -3,7 +3,14 @@ Description=Looping media player (mpv on bare DRM/KMS)
 Documentation=man:mpv(1)
 After=systemd-user-sessions.service multi-user.target
 # tty1 is ours: nothing else may hold DRM master on the console.
+# Conflicts= alone races - without the matching After=, systemd stops getty and
+# starts mpv concurrently and mpv lands on a VT that is still being torn down.
 Conflicts=getty@tty1.service
+After=getty@tty1.service
+# Never give up: this box is unattended. MUST live in [Unit] - systemd moved it
+# out of [Service] in v229 and now silently ignores it there, which reinstates
+# the default limit of 5 starts / 10s and makes the player stay dead.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -27,10 +34,12 @@ RuntimeDirectoryPreserve=restart
 
 ExecStart=/usr/local/bin/player-run
 
+# mpv returns 4 when it quits on a signal, so every systemctl stop/restart
+# would otherwise mark the unit failed.
+SuccessExitStatus=4
+
 Restart=always
 RestartSec=2
-# Never give up: this box is unattended.
-StartLimitIntervalSec=0
 
 [Install]
 WantedBy=multi-user.target

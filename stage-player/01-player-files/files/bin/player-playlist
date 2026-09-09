@@ -90,11 +90,11 @@ if [ -s "$TMP" ]; then
             log "skipping missing file: $f"
         fi
     done < "$TMP"
-    mv "$VALID" "$TMP"
+    mv -f "$VALID" "$TMP"
 fi
 
 COUNT=$(wc -l < "$TMP" | tr -d ' ')
-mv "$TMP" "$PLAYLIST"
+mv -f "$TMP" "$PLAYLIST"
 trap - EXIT
 chmod 0644 "$PLAYLIST"
 
