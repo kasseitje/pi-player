@@ -207,6 +207,17 @@ Playlist precedence in `player-playlist`:
 3. USB mounted, neither → unmount, fall back to internal
 4. No USB → scan `/opt/player/media` (the title card)
 
+`player-stats` is the diagnostic sampler: one line per interval with RSS, swap,
+%CPU over the interval (not ps's since-launch average), `CmaFree`,
+`MemAvailable`, the demuxer queue's `fw-bytes`, `hwdec-current`, playlist
+position, `vcgencmd get_throttled` and the current file. `player-stats --once`
+gives a single line for scripting. **Watch `cma_free`** — it is what predicts a
+V4L2 decoder stall, and `MemAvailable` can look healthy while it is at zero.
+`player-stats.service` is installed but deliberately **not enabled**: start it
+by hand and read it with `journalctl -fu player-stats`, which is size-capped.
+Never redirect it to a file on the appliance — under an overlay rootfs every
+write is RAM.
+
 `player-watchdog` (timer, every 37 s) recovers a **hung** mpv, which
 `Restart=always` cannot: a stalled V4L2 decoder leaves the process running with
 threads in `Ssl+` and the picture frozen, so systemd sees a healthy service. It

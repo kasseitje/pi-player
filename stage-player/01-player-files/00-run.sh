@@ -8,6 +8,7 @@ install -v -m 755 -o root -g root files/bin/usb-media-attach  "${ROOTFS_DIR}/usr
 install -v -m 755 -o root -g root files/bin/usb-media-detach  "${ROOTFS_DIR}/usr/local/bin/usb-media-detach"
 install -v -m 755 -o root -g root files/bin/player-osd-ip     "${ROOTFS_DIR}/usr/local/bin/player-osd-ip"
 install -v -m 755 -o root -g root files/bin/player-watchdog   "${ROOTFS_DIR}/usr/local/bin/player-watchdog"
+install -v -m 755 -o root -g root files/bin/player-stats      "${ROOTFS_DIR}/usr/local/bin/player-stats"
 
 # Tunables
 install -v -m 644 -o root -g root files/etc/player.default    "${ROOTFS_DIR}/etc/default/player"
@@ -33,6 +34,9 @@ install -v -m 644 -o root -g root files/systemd/player-osd-ip.service "${ROOTFS_
 install -v -m 644 -o root -g root files/systemd/player-osd-ip.timer   "${ROOTFS_DIR}/etc/systemd/system/player-osd-ip.timer"
 install -v -m 644 -o root -g root files/systemd/player-watchdog.service "${ROOTFS_DIR}/etc/systemd/system/player-watchdog.service"
 install -v -m 644 -o root -g root files/systemd/player-watchdog.timer   "${ROOTFS_DIR}/etc/systemd/system/player-watchdog.timer"
+# Diagnostic only - deliberately NOT enabled in 01-run-chroot.sh. Start it by
+# hand when investigating something: systemctl start player-stats
+install -v -m 644 -o root -g root files/systemd/player-stats.service    "${ROOTFS_DIR}/etc/systemd/system/player-stats.service"
 
 # udev rule
 install -v -m 644 -o root -g root files/udev/99-usb-media.rules "${ROOTFS_DIR}/etc/udev/rules.d/99-usb-media.rules"

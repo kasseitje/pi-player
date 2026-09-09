@@ -1,0 +1,84 @@
+#!/bin/bash
+# Sample the player's health. Diagnostic tool, not part of normal operation.
+#
+#   player-stats            sample every 30s until interrupted
+#   player-stats 5          sample every 5s
+#   player-stats --once     one line, then exit (for scripting)
+#
+# Writes to stdout. Do NOT redirect this to a file on the appliance itself: with
+# an overlay rootfs every write is RAM. Run it over SSH and keep the log on your
+# workstation, or `systemctl start player-stats` to collect it in the journal,
+# which is already size-capped.
+set -uo pipefail
+
+. /etc/default/player
+
+INTERVAL=30
+ONCE=0
+case "${1:-}" in
+    --once) ONCE=1 ;;
+    ''|*[!0-9]*) [ -z "${1:-}" ] || { echo "usage: player-stats [seconds|--once]" >&2; exit 2; } ;;
+    *) INTERVAL="$1" ;;
+esac
+
+HZ="$(getconf CLK_TCK)"
+
+ipc_raw() {
+    printf '{"command":["get_property","%s"]}\n' "$1" \
+        | socat -T1 - "UNIX-CONNECT:${MPV_SOCKET}" 2>/dev/null
+}
+# Scalar properties only; strips the surrounding quotes for strings.
+ipc() { ipc_raw "$1" | sed -n 's/.*"data":\([^,}]*\).*/\1/p' | tr -d '"'; }
+
+# "-" when the key is absent (non-Pi kernel has no CmaFree); 0 is a real and
+# very different answer - it is what an exhausted CMA pool reports.
+meminfo() {
+    local v
+    v="$(awk -v k="$1" '$1==k":"{printf "%d", $2/1024}' /proc/meminfo)"
+    printf '%s' "${v:--}"
+}
+
+# utime+stime, in clock ticks, for a %CPU computed over the sample interval
+# rather than ps's average-since-launch (which never shows a current spike).
+cpu_ticks() { awk '{print $14+$15}' "/proc/$1/stat" 2>/dev/null || echo 0; }
+
+sample() {
+    local pid t0 t1 rss swp cpu fw thr
+    pid="$(pgrep -x mpv | head -n1)"
+    if [ -z "$pid" ]; then
+        printf '%s mpv not running\n' "$(date '+%Y-%m-%d %H:%M:%S')"
+        return
+    fi
+
+    t0="$(cpu_ticks "$pid")"
+    sleep 1
+    t1="$(cpu_ticks "$pid")"
+    cpu=$(( (t1 - t0) * 100 / HZ ))
+
+    rss=$(( $(awk '/VmRSS/{print $2}'  "/proc/$pid/status" 2>/dev/null || echo 0) / 1024 ))
+    swp=$(( $(awk '/VmSwap/{print $2}' "/proc/$pid/status" 2>/dev/null || echo 0) / 1024 ))
+
+    # The demuxer read-ahead queue: this is what stepped RSS up by 125MB before
+    # it was capped, so it is worth watching directly rather than inferring it.
+    fw="$(ipc_raw demuxer-cache-state | sed -n 's/.*"fw-bytes":\([0-9]*\).*/\1/p')"
+    fw=$(( ${fw:-0} / 1048576 ))
+
+    # Thermal throttling at a venue shows up as stutter and is otherwise silent.
+    thr="-"
+    command -v vcgencmd >/dev/null 2>&1 && thr="$(vcgencmd get_throttled 2>/dev/null | cut -d= -f2)"
+
+    printf '%s rss=%sM swap=%sM cpu=%s%% cma_free=%sM mem_avail=%sM cache=%sM hwdec=%s pos=%s throttled=%s file=%s\n' \
+        "$(date '+%Y-%m-%d %H:%M:%S')" "$rss" "$swp" "$cpu" \
+        "$(meminfo CmaFree)" "$(meminfo MemAvailable)" "$fw" \
+        "$(ipc hwdec-current)" "$(ipc playlist-pos)" "$thr" "$(ipc filename)"
+}
+
+if [ "$ONCE" = "1" ]; then
+    sample
+    exit 0
+fi
+
+while :; do
+    sample
+    sleep "$INTERVAL"
+done

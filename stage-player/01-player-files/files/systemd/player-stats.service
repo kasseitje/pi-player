@@ -1,0 +1,8 @@
+[Unit]
+Description=Sample player health into the journal (diagnostic, not enabled by default)
+After=player.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/player-stats 30
+Restart=no
