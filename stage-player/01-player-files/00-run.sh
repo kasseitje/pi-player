@@ -12,6 +12,20 @@ install -v -m 755 -o root -g root files/bin/player-watchdog   "${ROOTFS_DIR}/usr
 # Tunables
 install -v -m 644 -o root -g root files/etc/player.default    "${ROOTFS_DIR}/etc/default/player"
 
+# Hardware decoding is a build-time choice because there is no runtime probe
+# that gets it right. --hwdec=auto-safe picks the good path on a Pi 4, but on a
+# Pi 3's VideoCore IV it silently falls back to SOFTWARE decode: 300% CPU, and
+# RSS climbing until the OOM killer takes mpv out. Nothing logs an error.
+PLAYER_HWDEC="${PLAYER_HWDEC:-auto-safe}"
+sed -i "s/--hwdec=[^ \"]*/--hwdec=${PLAYER_HWDEC}/" "${ROOTFS_DIR}/etc/default/player"
+
+# Fail the build rather than shipping an image that silently software-decodes.
+if ! grep -q -- "--hwdec=${PLAYER_HWDEC}" "${ROOTFS_DIR}/etc/default/player"; then
+	echo "FATAL: could not set --hwdec=${PLAYER_HWDEC} in /etc/default/player"
+	exit 1
+fi
+echo "player: hwdec=${PLAYER_HWDEC}"
+
 # systemd units
 install -v -m 644 -o root -g root files/systemd/player.service     "${ROOTFS_DIR}/etc/systemd/system/player.service"
 install -v -m 644 -o root -g root files/systemd/usb-media@.service "${ROOTFS_DIR}/etc/systemd/system/usb-media@.service"

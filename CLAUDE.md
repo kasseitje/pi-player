@@ -144,7 +144,9 @@ pi-gen runs numbered subdirectories in order; `NN-run.sh` executes on the host
 against `${ROOTFS_DIR}`, `NN-run-chroot.sh` executes inside the target rootfs.
 
 - `00-install-packages/00-packages` — mpv, socat, exfatprogs, ntfs-3g, …
-- `01-player-files/00-run.sh` (host) — installs `files/` into the rootfs
+- `01-player-files/00-run.sh` (host) — installs `files/` into the rootfs and
+  applies `PLAYER_HWDEC` from `config` to `MPV_VO_OPTS`, failing the build if
+  the substitution does not take
 - `01-player-files/01-run-chroot.sh` (chroot) — rewrites `User=`/`Group=` in
   `player.service` from `FIRST_USER_NAME`, sets `multi-user.target`, disables
   `getty@tty1`, adds the user to `video,render,input`
@@ -346,10 +348,17 @@ Chronological, from the build-out session. Several cost real time.
 
 ## Pi 3 testing deltas
 
-The arm64 image boots unchanged, but two defaults assume a Pi 4:
+The arm64 image boots unchanged, but the decoder default assumes a Pi 4.
+**Build Pi 3 images with `PLAYER_HWDEC='v4l2m2m-copy'` in `config`** rather than
+editing `/etc/default/player` after flashing — a hand edit is lost on the next
+flash, and the failure is silent.
 
-- `/etc/default/player`: pin `--hwdec=v4l2m2m-copy` (the shipped
-  `--hwdec=auto-safe` silently falls back to software decode → 300% CPU)
+**Any custom variable in `config` must be `export`ed.** pi-gen does a plain
+`source config` (build.sh:160) and sub-stage scripts run as child processes, so
+a plain assignment never reaches them and the stage silently uses its default.
+
+- `--hwdec=auto-safe` on VideoCore IV falls back to software decode with no
+  error: 300% CPU, and RSS climbing until the OOM killer fires
 - `config.txt`: **keep `cma-256`.** Earlier notes in this project recommended
   dropping to `cma-128` on a 1 GB Pi 3. That advice was written while hwdec was
   falling back to software, where CMA sits unused. With hardware decode actually

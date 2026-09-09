@@ -25,6 +25,14 @@ DISABLE_FIRST_BOOT_USER_RENAME=1
 # purges the packages, which pi-gen installs regardless of this flag.
 ENABLE_CLOUD_INIT=0
 
+# Hardware video decoding, applied to MPV_VO_OPTS by stage-player/01-player-files.
+# MUST be exported: pi-gen `source`s this file, and sub-stage scripts run as
+# child processes, so a plain assignment never reaches them.
+#   Pi 4 / Pi 5 -> auto-safe        Pi 3 -> v4l2m2m-copy
+# auto-safe on a Pi 3 falls back to software decode with no error: 300% CPU and
+# a steady climb to an OOM kill.
+export PLAYER_HWDEC='auto-safe'
+
 TARGET_HOSTNAME='pi-player'
 LOCALE_DEFAULT='en_GB.UTF-8'
 TIMEZONE_DEFAULT='Europe/Brussels'
