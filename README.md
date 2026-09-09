@@ -346,7 +346,8 @@ echo '{"command":["get_property","hwdec-current"]}' | socat - /run/player/mpv.so
 
 Watch the box's health over time. `cma_free` is the number that predicts a
 decoder stall; `cpu` around one core (~90%) means hardware decode is working,
-~300% means it is not:
+~300% means it is not; `temp` warns before `throttled` ever trips (soft throttle
+starts at 80 C, hard at 85 C):
 
 ```bash
 player-stats 30                 # one line every 30s, Ctrl-C to stop

@@ -43,7 +43,7 @@ meminfo() {
 cpu_ticks() { awk '{print $14+$15}' "/proc/$1/stat" 2>/dev/null || echo 0; }
 
 sample() {
-    local pid t0 t1 rss swp cpu fw thr
+    local pid t0 t1 rss swp cpu fw thr tmp
     pid="$(pgrep -x mpv | head -n1)"
     if [ -z "$pid" ]; then
         printf '%s mpv not running\n' "$(date '+%Y-%m-%d %H:%M:%S')"
@@ -64,12 +64,24 @@ sample() {
     fw=$(( ${fw:-0} / 1048576 ))
 
     # Thermal throttling at a venue shows up as stutter and is otherwise silent.
+    # Soft-throttle starts at 80C, hard at 85C, so the temperature is the early
+    # warning and get_throttled is the record of whether it already happened
+    # (it latches, so a non-zero value can be from hours ago).
     thr="-"
     command -v vcgencmd >/dev/null 2>&1 && thr="$(vcgencmd get_throttled 2>/dev/null | cut -d= -f2)"
 
-    printf '%s rss=%sM swap=%sM cpu=%s%% cma_free=%sM mem_avail=%sM cache=%sM hwdec=%s pos=%s throttled=%s file=%s\n' \
+    # sysfs rather than `vcgencmd measure_temp`: always present on a Pi kernel,
+    # no dependency on the firmware tools being installed.
+    tmp="-"
+    if [ -r /sys/class/thermal/thermal_zone0/temp ]; then
+        tmp="$(awk '{printf "%.0f", $1/1000}' /sys/class/thermal/thermal_zone0/temp)"
+    elif command -v vcgencmd >/dev/null 2>&1; then
+        tmp="$(vcgencmd measure_temp 2>/dev/null | sed -n "s/temp=\\([0-9.]*\\).*/\\1/p")"
+    fi
+
+    printf '%s rss=%sM swap=%sM cpu=%s%% cma_free=%sM mem_avail=%sM cache=%sM temp=%sC hwdec=%s pos=%s throttled=%s file=%s\n' \
         "$(date '+%Y-%m-%d %H:%M:%S')" "$rss" "$swp" "$cpu" \
-        "$(meminfo CmaFree)" "$(meminfo MemAvailable)" "$fw" \
+        "$(meminfo CmaFree)" "$(meminfo MemAvailable)" "$fw" "$tmp" \
         "$(ipc hwdec-current)" "$(ipc playlist-pos)" "$thr" "$(ipc filename)"
 }
 

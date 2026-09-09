@@ -182,8 +182,12 @@ a looping clip cannot alias with it. It logs `CmaFree` and `MemAvailable` when
 it fires, because a restart destroys the evidence of why it hung.
 
 `player-stats` is the diagnostic sampler (RSS, swap, %CPU over the interval,
-`CmaFree`, `MemAvailable`, demuxer `fw-bytes`, `hwdec-current`, position,
-`vcgencmd get_throttled`, current file). `player-stats.service` is installed but
+`CmaFree`, `MemAvailable`, demuxer `fw-bytes`, SoC temperature, `hwdec-current`,
+position, `vcgencmd get_throttled`, current file). Temperature comes from
+`/sys/class/thermal/thermal_zone0/temp`, which is always present, rather than
+`vcgencmd measure_temp`, which needs the firmware tools installed. `throttled`
+**latches** — a non-zero value may be from hours ago — so `temp` is the live
+signal and `throttled` the history. `player-stats.service` is installed but
 deliberately **not enabled**. **Watch `cma_free`** — it predicts a decoder
 stall, and `MemAvailable` can look healthy while it is at zero. Never redirect
 it to a file on the Pi: under an overlay rootfs every write is RAM.
