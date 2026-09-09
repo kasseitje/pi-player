@@ -183,11 +183,17 @@ it fires, because a restart destroys the evidence of why it hung.
 
 `player-stats` is the diagnostic sampler (RSS, swap, %CPU over the interval,
 `CmaFree`, `MemAvailable`, demuxer `fw-bytes`, SoC temperature, `hwdec-current`,
-position, `vcgencmd get_throttled`, current file). Temperature comes from
-`/sys/class/thermal/thermal_zone0/temp`, which is always present, rather than
-`vcgencmd measure_temp`, which needs the firmware tools installed. `throttled`
-**latches** — a non-zero value may be from hours ago — so `temp` is the live
-signal and `throttled` the history. `player-stats.service` is installed but
+position, `vcgencmd get_throttled`, current file). Temperature prefers `vcgencmd measure_temp`
+(the firmware's own SoC sensor, authoritative on a Pi) and falls back to the
+thermal zone whose `type` is `cpu-thermal`. **Never assume `thermal_zone0`** —
+on some kernels it is a different or stub sensor reporting a flat implausible
+value (an x86 host reports `acpitz` = exactly 25000 there while the real package
+sensor sits in a much higher-numbered zone). `throttled` **latches** — a
+non-zero value may be from hours ago — so `temp` is the live signal and
+`throttled` the history. `throttled` needs `vcgencmd`, which is present on the
+built image via the pi-gen base (confirmed at `/usr/bin/vcgencmd`) rather than
+anything `00-packages` adds — so do not add a package for it. It has no
+fallback and reads `-` if absent; temperature does have fallbacks. `player-stats.service` is installed but
 deliberately **not enabled**. **Watch `cma_free`** — it predicts a decoder
 stall, and `MemAvailable` can look healthy while it is at zero. Never redirect
 it to a file on the Pi: under an overlay rootfs every write is RAM.

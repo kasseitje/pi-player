@@ -70,14 +70,32 @@ sample() {
     thr="-"
     command -v vcgencmd >/dev/null 2>&1 && thr="$(vcgencmd get_throttled 2>/dev/null | cut -d= -f2)"
 
-    # sysfs rather than `vcgencmd measure_temp`: always present on a Pi kernel,
-    # no dependency on the firmware tools being installed.
+    # vcgencmd first: on a Pi it reads the firmware's own SoC sensor and is the
+    # authoritative number. Fall back to the thermal zone whose type is
+    # cpu-thermal - do NOT assume thermal_zone0, which on some kernels is a
+    # different (or stub) sensor and reports a flat, implausible value.
     tmp="-"
-    if [ -r /sys/class/thermal/thermal_zone0/temp ]; then
-        tmp="$(awk '{printf "%.0f", $1/1000}' /sys/class/thermal/thermal_zone0/temp)"
-    elif command -v vcgencmd >/dev/null 2>&1; then
-        tmp="$(vcgencmd measure_temp 2>/dev/null | sed -n "s/temp=\\([0-9.]*\\).*/\\1/p")"
+    if command -v vcgencmd >/dev/null 2>&1; then
+        tmp="$(vcgencmd measure_temp 2>/dev/null | cut -d= -f2 | tr -dc '0-9.')"
     fi
+    if [ -z "$tmp" ] || [ "$tmp" = "-" ]; then
+        for z in /sys/class/thermal/thermal_zone*; do
+            [ -r "$z/type" ] && [ -r "$z/temp" ] || continue
+            case "$(cat "$z/type")" in
+                *cpu-thermal*|*soc*)
+                    tmp="$(awk '{printf "%.0f", $1/1000}' "$z/temp")"
+                    break ;;
+            esac
+        done
+    fi
+    # Last resort: zone0. On a Pi it really is cpu-thermal (57458 = 57.5C on a
+    # Pi 3 B+ under load); the type match above only exists so a kernel that
+    # puts a stub sensor there cannot report a plausible-looking lie.
+    if [ -z "$tmp" ] || [ "$tmp" = "-" ]; then
+        [ -r /sys/class/thermal/thermal_zone0/temp ] &&
+            tmp="$(awk '{printf "%.0f", $1/1000}' /sys/class/thermal/thermal_zone0/temp)"
+    fi
+    [ -n "$tmp" ] || tmp="-"
 
     printf '%s rss=%sM swap=%sM cpu=%s%% cma_free=%sM mem_avail=%sM cache=%sM temp=%sC hwdec=%s pos=%s throttled=%s file=%s\n' \
         "$(date '+%Y-%m-%d %H:%M:%S')" "$rss" "$swp" "$cpu" \
