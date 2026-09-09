@@ -94,9 +94,14 @@ if [ -s "$TMP" ]; then
 fi
 
 COUNT=$(wc -l < "$TMP" | tr -d ' ')
+
+# Set the mode on the temp file, BEFORE the rename. This script runs as root
+# from usb-media-attach and as the player user from player-run, so whoever runs
+# it second inherits a file owned by the other one - and chmod on a file you do
+# not own fails with EPERM. Renaming into a directory you own always works.
+chmod 0644 "$TMP"
 mv -f "$TMP" "$PLAYLIST"
 trap - EXIT
-chmod 0644 "$PLAYLIST"
 
 log "playlist regenerated: mode=$MODE entries=$COUNT source=${SOURCE:-none}"
 [ "$COUNT" -gt 0 ]

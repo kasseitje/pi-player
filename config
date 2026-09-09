@@ -20,6 +20,11 @@ FIRST_USER_PASS='changeme-before-you-build'
 # Do not prompt for a user rename on first boot - this box has no keyboard.
 DISABLE_FIRST_BOOT_USER_RENAME=1
 
+# No cloud metadata source on a signage box; cloud-init only costs boot time.
+# This suppresses the boot-partition seed files only - stage-player/03-cleanup
+# purges the packages, which pi-gen installs regardless of this flag.
+ENABLE_CLOUD_INIT=0
+
 TARGET_HOSTNAME='pi-player'
 LOCALE_DEFAULT='en_GB.UTF-8'
 TIMEZONE_DEFAULT='Europe/Brussels'

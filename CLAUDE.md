@@ -149,8 +149,23 @@ against `${ROOTFS_DIR}`, `NN-run-chroot.sh` executes inside the target rootfs.
   `player.service` from `FIRST_USER_NAME`, sets `multi-user.target`, disables
   `getty@tty1`, adds the user to `video,render,input`
 - `02-boot-config/00-run.sh` (host) — appends to `cmdline.txt` / `config.txt`
+- `03-cleanup/00-run-chroot.sh` (chroot) — purges cloud-init, slims apt
 - `EXPORT_IMAGE` carries `IMG_SUFFIX=""`, so the player image is the one
   *without* `-lite`
+
+Two pi-gen behaviours that make stage authoring counter-intuitive:
+
+- **A sub-stage's `NN-packages` list is installed unconditionally.** `run_sub_stage`
+  processes `NN-packages` independently of `NN-run.sh`, so a stage that exits
+  early still installs its packages. This is why `ENABLE_CLOUD_INIT=0` alone
+  leaves cloud-init on the image and `03-cleanup` has to purge it.
+- **`export-image` runs after your stage and partly undoes cleanup.**
+  `export-image/02-set-sources/01-run.sh` deletes the apt lists and *then* runs
+  `apt-get update && dist-upgrade && clean`, so lists are repopulated into the
+  shipped image (~150 MB) while only `/var/cache/apt/archives` ends up empty.
+  Config files placed in the rootfs *are* honoured by that later update, which
+  is why `03-cleanup` writes `/etc/apt/apt.conf.d/99-player-slim` rather than
+  relying on deleting files.
 
 **Architecture and Debian release come from the pi-gen git branch, not from
 `config`.** Setting `ARCH=`/`RELEASE=` there does nothing and warns. Use
@@ -270,6 +285,9 @@ Chronological, from the build-out session. Several cost real time.
 | `Main process exited, code=exited, status=4/NOPERMISSION` on every stop/restart | mpv returns 4 when it quits on a signal; systemd's label for exit code 4 is misleading, it is not a permission problem | `SuccessExitStatus=4` |
 | Photos green / black / miscoloured | Upstream decode bug, **not** the display path — reproduces under `cage`/Wayland. Progressive, CMYK, grayscale, RGBA, odd-dimension images | Convert stills to video via `prepare-media.sh` |
 | GIFs lost their animation | `-loop 1` is an image2 demuxer option; the gif demuxer aborts with "Option loop not found", so every GIF fell to the ImageMagick fallback, which flattens frame 0 | `-ignore_loop 0` for `.gif` |
+| mpv killed by the global OOM killer after ~14 h of looping on a Pi 3 | mpv accumulates anonymous memory across playlist iterations. Its RSS looks harmless (~40 MB) because almost all of it has been paged out — **read the `swapents` column of the OOM dump, not `rss`**: 220839 pages = 863 MiB swapped, 95% of all swap, ~902 MiB of anon memory total. Swap fills, page cache collapses to ~2 MB, OOM fires | Under investigation. `--hwdec=auto-safe` on VideoCore IV falls back to software decode and is the first suspect — pin `--hwdec=v4l2m2m-copy` (the documented Pi 3 delta) and re-measure RSS over hours |
+| An OOM dump seems to show no process using memory | Every RSS is tiny but swap is 100% full. `rss` excludes swapped-out pages; `swapents` is where a long-running leak hides. Summing RSS alone will point at the wrong culprit | Sum `rss + swapents` per task before concluding anything |
+| `MemoryMax=`/`MemoryHigh=` in a unit silently does nothing | Raspberry Pi OS ships `cgroup_disable=memory` on the kernel command line, so the memory cgroup controller does not exist | Remove it from `cmdline.txt` if you want systemd memory limits on the player |
 | `XDG_RUNTIME_DIR is not set` under `sudo -u` | No login session, so `pam_systemd` never created `/run/user/<uid>` | Log in as that user on the console, or `machinectl shell` |
 
 ## Conventions to preserve
@@ -340,7 +358,21 @@ over IPC is the explicit form.
 Not done, recommended before unattended running: overlay rootfs (`raspi-config`
 → Performance Options → Overlay File System), which makes the rootfs read-only
 with a RAM overlay so power loss cannot corrupt the card. Disable it
-temporarily to change baked-in media or config. `FIRST_USER_PASS` in `config`
+temporarily to change baked-in media or config.
+
+**The overlay is not free.** Its upper layer is tmpfs, so every write to the
+rootfs consumes RAM and is never reclaimed until reboot. That is survivable on a
+Pi 4 but tight on a 1 GB Pi 3, so cap the journal before enabling it. (Note: as
+of 2026-09-09 `overlayroot=tmpfs` appears on the test Pi's `cmdline.txt` but the
+kernel logs it as an unknown parameter and `/var` holds 1.2 GB of persistent
+data, so the overlay is **not actually active** there — verify with
+`mount | grep ' / '` rather than trusting the cmdline.)
+
+```bash
+printf '[Journal]\nStorage=volatile\nRuntimeMaxUse=16M\n' \
+  | sudo tee /etc/systemd/journald.conf.d/10-player.conf
+sudo du -xh --max-depth=2 /var | sort -h | tail -20   # what is growing
+``` `FIRST_USER_PASS` in `config`
 is still the placeholder and `ENABLE_SSH=1` uses password auth.
 
 ## Next phase: multiple screens in sync

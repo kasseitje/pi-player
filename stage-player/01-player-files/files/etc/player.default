@@ -23,4 +23,4 @@ MEDIA_EXTENSIONS="mp4 mkv mov avi m4v webm jpg jpeg png bmp gif"
 MPV_EXTRA_OPTS=""
 
 # Video output settings. Pi 4 with the vc4-kms-v3d driver on a bare console.
-MPV_VO_OPTS="--vo=gpu --gpu-api=opengl --gpu-context=drm --hwdec=auto-safe"
+MPV_VO_OPTS="--vo=gpu --gpu-api=opengl --gpu-context=drm --hwdec=auto-safe --shuffle"
