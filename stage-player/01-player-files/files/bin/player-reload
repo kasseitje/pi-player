@@ -25,6 +25,9 @@ REPLY_JSON=$(printf '{"command":["loadlist","%s","replace"]}\n' "$PLAYLIST" \
 
 if echo "$REPLY_JSON" | grep -q '"error":"success"'; then
     log "playlist reloaded via IPC"
+    # The timer would catch this within 30s; do it now so the overlay appears
+    # or clears at the same moment the content changes.
+    player-osd-ip
 else
     log "IPC loadlist failed (reply: ${REPLY_JSON:-none}); restarting player.service"
     systemctl restart --no-block player.service

@@ -22,5 +22,16 @@ MEDIA_EXTENSIONS="mp4 mkv mov avi m4v webm jpg jpeg png bmp gif"
 # Extra flags appended to the mpv command line (e.g. --shuffle, --volume=0).
 MPV_EXTRA_OPTS=""
 
+# Show the hostname and IP over the fallback loop (no USB stick present), so an
+# unattended box can be found on a venue network. Set to 0 to disable.
+SHOW_IP_ON_FALLBACK="1"
+
+# Where player-playlist publishes the current source mode, read by player-osd-ip.
+MODE_FILE="/run/player/mode"
+
+# OSD styling. Only ever visible while the IP overlay is up, so these are safe
+# to leave set. osd-font-size scales with the video height by default.
+MPV_OSD_OPTS="--osd-font-size=30 --osd-align-x=left --osd-align-y=bottom --osd-margin-x=40 --osd-margin-y=40 --osd-border-size=2"
+
 # Video output settings. Pi 4 with the vc4-kms-v3d driver on a bare console.
 MPV_VO_OPTS="--vo=gpu --gpu-api=opengl --gpu-context=drm --hwdec=auto-safe --shuffle"

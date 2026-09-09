@@ -1,0 +1,48 @@
+#!/bin/bash
+# Overlay the hostname and IP address on the fallback loop, so an unattended box
+# can be found on a venue network with no keyboard attached. Only shown while
+# the fallback is playing: once a USB stick provides content, the overlay is
+# cleared so it never sits on top of the real programme.
+#
+# Driven over mpv's JSON IPC socket - no re-encode, no ffmpeg on the Pi, and no
+# restart of the player.
+set -uo pipefail
+
+. /etc/default/player
+
+MODE_FILE="${MODE_FILE:-/run/player/mode}"
+
+log() { logger -t player-osd-ip "$*"; }
+
+[ "${SHOW_IP_ON_FALLBACK:-1}" = "1" ] || exit 0
+[ -S "$MPV_SOCKET" ] || exit 0
+
+# $2 must already be valid JSON (a quoted string, or a bare number).
+mpv_set() {
+    local reply
+    reply=$(printf '{"command":["set_property","%s",%s]}\n' "$1" "$2" \
+        | socat -T2 - "UNIX-CONNECT:${MPV_SOCKET}" 2>/dev/null | head -n1)
+    case "$reply" in
+        *'"error":"success"'*) return 0 ;;
+        *) log "set_property $1 failed: ${reply:-no reply}"; return 1 ;;
+    esac
+}
+
+case "$(cat "$MODE_FILE" 2>/dev/null || echo unknown)" in
+    internal|empty)
+        # hostname -I lists every non-loopback address, so a box with both wired
+        # and Wi-Fi up shows both.
+        ips="$(hostname -I 2>/dev/null | tr -s ' ' | sed 's/[[:space:]]*$//')"
+        [ -n "$ips" ] || ips="no network"
+        # Strip anything that would break the JSON payload. Hostnames and dotted
+        # quads never contain these, but the file is not ours to trust.
+        text="$(printf '%s  -  %s' "$(hostname)" "$ips" | tr -d '"\\')"
+        mpv_set osd-msg1 "\"$text\"" && mpv_set osd-level 1
+        ;;
+    *)
+        mpv_set osd-level 0
+        ;;
+esac
+
+# Cosmetic overlay: never let a failed set_property change a caller's exit code.
+exit 0

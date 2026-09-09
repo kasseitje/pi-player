@@ -197,6 +197,13 @@ Playlist precedence in `player-playlist`:
 3. USB mounted, neither → unmount, fall back to internal
 4. No USB → scan `/opt/player/media` (the title card)
 
+`player-playlist` also publishes the chosen mode to `/run/player/mode`, which is
+what `player-osd-ip` reads to decide whether the fallback is on screen. It
+overlays hostname + IP via mpv's `osd-msg1`/`osd-level` properties over the IPC
+socket — no re-encode and no ffmpeg on the Pi — and clears it the moment USB
+content takes over. Driven by `player-osd-ip.timer` (every 30 s, for DHCP
+changes) and called directly from `player-reload` for an immediate update.
+
 `.m3u` entries resolve relative to the stick root, so they reach arbitrary
 depth regardless of the scan's `-maxdepth 2` limit. CRLF and `#` comments are
 tolerated; backslash separators are **not** translated.
@@ -229,6 +236,15 @@ why the player **cannot be tested over SSH or with `sudo -u`** — no seat, no
 **No compositor, ever.** A desktop session holds DRM master and makes
 `--gpu-context=drm` impossible. That is why `01-run-chroot.sh` forces
 `multi-user.target` and disables `getty@tty1`.
+
+**Keeping tty1 costs the other VTs, so one is bought back explicitly.**
+`NAutoVTs=0` is what reliably stops logind respawning `autovt@tty1`, but it is
+global — with it set, Ctrl+Alt+F2..F6 switch to blank consoles with no login
+prompt. `01-run-chroot.sh` therefore runs `systemctl enable getty@tty2.service`:
+a statically enabled getty is unaffected by `NAutoVTs` (which only governs
+logind's *on-demand* spawning) and never touches VT1. **tty2 is the maintenance
+console on this image.** Switching to it makes mpv drop DRM master and reacquire
+it on the way back, which is normal and handled.
 
 **One Pi per screen.** DRM master is exclusive per *card*, not per connector —
 the Pi 4's dual HDMI does not give two independent mpv processes. (An earlier

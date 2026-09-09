@@ -30,7 +30,17 @@ NAutoVTs=0
 ReserveVT=0
 LOGIND
 
+# NAutoVTs=0 is global: it stops logind spawning a getty on EVERY VT, so
+# Ctrl+Alt+F2..F6 would otherwise land on a blank console with no login prompt.
+# Statically enabling one getty restores a maintenance console. This is not
+# affected by NAutoVTs, which only governs logind's on-demand spawning, and it
+# never touches tty1, so the player's hold on VT1 is unchanged.
+systemctl enable getty@tty2.service
+
 systemctl enable player.service
+
+# Refreshes the hostname/IP overlay shown over the fallback loop.
+systemctl enable player-osd-ip.timer
 
 # usb-media@.service is template-instantiated by udev; it must not be "enabled".
 systemctl daemon-reload || true

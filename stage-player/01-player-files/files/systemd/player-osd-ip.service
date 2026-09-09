@@ -1,0 +1,7 @@
+[Unit]
+Description=Refresh the IP overlay on the player OSD
+After=player.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/player-osd-ip

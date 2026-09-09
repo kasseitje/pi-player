@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodically refresh the player IP overlay
+
+[Timer]
+# Late enough that DHCP has usually settled, then often enough to notice a
+# lease change or a cable being plugged in at the venue.
+OnBootSec=20
+OnUnitActiveSec=30
+AccuracySec=5
+
+[Install]
+WantedBy=timers.target

@@ -22,6 +22,7 @@ exec /usr/bin/mpv \
     --no-input-default-bindings \
     --input-ipc-server="$MPV_SOCKET" \
     --msg-level=all=warn \
+    ${MPV_OSD_OPTS:-} \
     $MPV_VO_OPTS \
     $MPV_EXTRA_OPTS \
     --playlist="$PLAYLIST"

@@ -103,5 +103,14 @@ chmod 0644 "$TMP"
 mv -f "$TMP" "$PLAYLIST"
 trap - EXIT
 
+# Publish the source mode so player-osd-ip knows whether the fallback is on
+# screen. Same temp-chmod-rename dance as the playlist above, for the same
+# reason: root and the player user both run this script.
+MODE_FILE="${MODE_FILE:-/run/player/mode}"
+MODE_TMP="$(mktemp "${MODE_FILE}.XXXXXX")"
+printf '%s\n' "$MODE" > "$MODE_TMP"
+chmod 0644 "$MODE_TMP"
+mv -f "$MODE_TMP" "$MODE_FILE"
+
 log "playlist regenerated: mode=$MODE entries=$COUNT source=${SOURCE:-none}"
 [ "$COUNT" -gt 0 ]
