@@ -1,0 +1,7 @@
+[Unit]
+Description=Restart the player if mpv stops responding
+After=player.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/player-watchdog

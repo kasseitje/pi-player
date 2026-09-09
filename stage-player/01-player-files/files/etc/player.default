@@ -20,11 +20,23 @@ IMAGE_DURATION="8"
 MEDIA_EXTENSIONS="mp4 mkv mov avi m4v webm jpg jpeg png bmp gif"
 
 # Extra flags appended to the mpv command line (e.g. --shuffle, --volume=0).
-MPV_EXTRA_OPTS=""
+#
+# The demuxer caps are not optional on a memory-constrained board. mpv reads
+# ahead until its packet queue is full: a 5s still-turned-clip never fills it,
+# but a multi-minute video does, and the default (~150MiB forward + ~50MiB back)
+# lands as a single step in RSS. Measured on a 1GB Pi 3: entering a movie cost
+# +125MB uncapped vs +35MB at 32MiB, and peak RSS fell from 490MB to 246MB.
+MPV_EXTRA_OPTS="--demuxer-max-bytes=32MiB --demuxer-max-back-bytes=8MiB"
 
 # Show the hostname and IP over the fallback loop (no USB stick present), so an
 # unattended box can be found on a venue network. Set to 0 to disable.
 SHOW_IP_ON_FALLBACK="1"
+
+# Watchdog: consecutive failed liveness checks before the player is restarted.
+# systemd's Restart=always only catches mpv EXITING - a stalled V4L2 decoder
+# leaves it running with the picture frozen. Set to 0 to disable the watchdog.
+WATCHDOG_STRIKES="3"
+WATCHDOG_STATE="/run/player-watchdog.state"
 
 # Where player-playlist publishes the current source mode, read by player-osd-ip.
 MODE_FILE="/run/player/mode"

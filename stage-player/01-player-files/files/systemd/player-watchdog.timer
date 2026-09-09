@@ -1,0 +1,13 @@
+[Unit]
+Description=Poll the player for liveness
+
+[Timer]
+# 90s of grace so a cold boot is never mistaken for a hang.
+OnBootSec=90
+# Deliberately not a round number: a looping clip must not keep landing on the
+# same playback-time at every poll and look frozen.
+OnUnitActiveSec=37
+AccuracySec=5
+
+[Install]
+WantedBy=timers.target

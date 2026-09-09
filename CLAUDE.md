@@ -197,6 +197,19 @@ Playlist precedence in `player-playlist`:
 3. USB mounted, neither → unmount, fall back to internal
 4. No USB → scan `/opt/player/media` (the title card)
 
+`player-watchdog` (timer, every 37 s) recovers a **hung** mpv, which
+`Restart=always` cannot: a stalled V4L2 decoder leaves the process running with
+threads in `Ssl+` and the picture frozen, so systemd sees a healthy service. It
+strikes on a missing/silent IPC socket, or on `playback-time` **and**
+`playlist-pos` both unchanged; three consecutive strikes trigger
+`systemctl restart --no-block`. Requiring *both* counters is deliberate — a
+short clip can land on the same `playback-time` across polls, and a single-item
+playlist never changes position, so either alone false-positives. The 37 s
+interval is deliberately not round, so a looping clip cannot alias with it
+repeatedly. `WATCHDOG_STRIKES=0` in `/etc/default/player` disables it. It logs
+`CmaFree` and `MemAvailable` at restart time, because a restart destroys the
+evidence of why it hung.
+
 `player-playlist` also publishes the chosen mode to `/run/player/mode`, which is
 what `player-osd-ip` reads to decide whether the fallback is on screen. It
 overlays hostname + IP via mpv's `osd-msg1`/`osd-level` properties over the IPC
@@ -302,6 +315,8 @@ Chronological, from the build-out session. Several cost real time.
 | Photos green / black / miscoloured | Upstream decode bug, **not** the display path — reproduces under `cage`/Wayland. Progressive, CMYK, grayscale, RGBA, odd-dimension images | Convert stills to video via `prepare-media.sh` |
 | GIFs lost their animation | `-loop 1` is an image2 demuxer option; the gif demuxer aborts with "Option loop not found", so every GIF fell to the ImageMagick fallback, which flattens frame 0 | `-ignore_loop 0` for `.gif` |
 | mpv killed by the global OOM killer after ~14 h of looping on a Pi 3 | mpv accumulates anonymous memory across playlist iterations. Its RSS looks harmless (~40 MB) because almost all of it has been paged out — **read the `swapents` column of the OOM dump, not `rss`**: 220839 pages = 863 MiB swapped, 95% of all swap, ~902 MiB of anon memory total. Swap fills, page cache collapses to ~2 MB, OOM fires | Under investigation. `--hwdec=auto-safe` on VideoCore IV falls back to software decode and is the first suspect — pin `--hwdec=v4l2m2m-copy` (the documented Pi 3 delta) and re-measure RSS over hours |
+| mpv freezes mid-playlist: alive, threads in `Ssl+` (not `D`), IPC silent, RSS frozen, one thread spinning | CMA exhaustion. `journalctl -k` shows `bcm2835-codec: dma alloc of size 3133440 failed` under `vb2_dc_alloc → v4l2_m2m_ioctl_reqbufs` — 3133440 B is one 1920x1088 NV12 frame. `CmaFree` was 120 kB of a `cma-128` pool. mpv does not fall back to software on a failed REQBUFS, it just stalls | Restore `cma-256`. Check `CmaFree` in `/proc/meminfo`, not just `MemFree` — `MemAvailable` can look healthy (415 MB) while CMA is empty |
+| mpv RSS climbs in large steps and never comes back; eventually OOM | Not a leak. mpv's demuxer read-ahead queue (default ~150MiB forward + ~50MiB back) fills on long videos and never on short ones, so RSS steps up on each *new, larger* working set and plateaus. Short stills-turned-clips show zero growth; a multi-minute clip steps +125MB | Cap it: `--demuxer-max-bytes=32MiB --demuxer-max-back-bytes=8MiB`, now the default in `player.default`. Diagnose with `{"command":["get_property","demuxer-cache-state"]}` over IPC and watch `fw-bytes` |
 | An OOM dump seems to show no process using memory | Every RSS is tiny but swap is 100% full. `rss` excludes swapped-out pages; `swapents` is where a long-running leak hides. Summing RSS alone will point at the wrong culprit | Sum `rss + swapents` per task before concluding anything |
 | `MemoryMax=`/`MemoryHigh=` in a unit silently does nothing | Raspberry Pi OS ships `cgroup_disable=memory` on the kernel command line, so the memory cgroup controller does not exist | Remove it from `cmdline.txt` if you want systemd memory limits on the player |
 | `XDG_RUNTIME_DIR is not set` under `sudo -u` | No login session, so `pam_systemd` never created `/run/user/<uid>` | Log in as that user on the console, or `machinectl shell` |
@@ -335,7 +350,13 @@ The arm64 image boots unchanged, but two defaults assume a Pi 4:
 
 - `/etc/default/player`: pin `--hwdec=v4l2m2m-copy` (the shipped
   `--hwdec=auto-safe` silently falls back to software decode → 300% CPU)
-- `config.txt`: `cma-128` instead of `cma-256` against the Pi 3's fixed 1 GB
+- `config.txt`: **keep `cma-256`.** Earlier notes in this project recommended
+  dropping to `cma-128` on a 1 GB Pi 3. That advice was written while hwdec was
+  falling back to software, where CMA sits unused. With hardware decode actually
+  working the V4L2 decoder needs a CMA buffer pool (~16-20 × 3.13 MB for 1080p,
+  plus KMS framebuffers), and page cache from streaming off the USB stick
+  squats in the CMA region — `cma-128` then exhausts and mpv hangs. See the bug
+  table
 
 1080p copy-back drops frames on a Pi 3 — memory bandwidth, not decode. Expected;
 do not tune the image around it. Use 720p test content if it distracts.

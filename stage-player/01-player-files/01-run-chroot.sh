@@ -42,6 +42,9 @@ systemctl enable player.service
 # Refreshes the hostname/IP overlay shown over the fallback loop.
 systemctl enable player-osd-ip.timer
 
+# Recovers a hung mpv, which Restart=always cannot see.
+systemctl enable player-watchdog.timer
+
 # usb-media@.service is template-instantiated by udev; it must not be "enabled".
 systemctl daemon-reload || true
 

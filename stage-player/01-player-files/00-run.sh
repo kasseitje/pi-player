@@ -7,6 +7,7 @@ install -v -m 755 -o root -g root files/bin/player-reload     "${ROOTFS_DIR}/usr
 install -v -m 755 -o root -g root files/bin/usb-media-attach  "${ROOTFS_DIR}/usr/local/bin/usb-media-attach"
 install -v -m 755 -o root -g root files/bin/usb-media-detach  "${ROOTFS_DIR}/usr/local/bin/usb-media-detach"
 install -v -m 755 -o root -g root files/bin/player-osd-ip     "${ROOTFS_DIR}/usr/local/bin/player-osd-ip"
+install -v -m 755 -o root -g root files/bin/player-watchdog   "${ROOTFS_DIR}/usr/local/bin/player-watchdog"
 
 # Tunables
 install -v -m 644 -o root -g root files/etc/player.default    "${ROOTFS_DIR}/etc/default/player"
@@ -16,6 +17,8 @@ install -v -m 644 -o root -g root files/systemd/player.service     "${ROOTFS_DIR
 install -v -m 644 -o root -g root files/systemd/usb-media@.service "${ROOTFS_DIR}/etc/systemd/system/usb-media@.service"
 install -v -m 644 -o root -g root files/systemd/player-osd-ip.service "${ROOTFS_DIR}/etc/systemd/system/player-osd-ip.service"
 install -v -m 644 -o root -g root files/systemd/player-osd-ip.timer   "${ROOTFS_DIR}/etc/systemd/system/player-osd-ip.timer"
+install -v -m 644 -o root -g root files/systemd/player-watchdog.service "${ROOTFS_DIR}/etc/systemd/system/player-watchdog.service"
+install -v -m 644 -o root -g root files/systemd/player-watchdog.timer   "${ROOTFS_DIR}/etc/systemd/system/player-watchdog.timer"
 
 # udev rule
 install -v -m 644 -o root -g root files/udev/99-usb-media.rules "${ROOTFS_DIR}/etc/udev/rules.d/99-usb-media.rules"

@@ -1,0 +1,79 @@
+#!/bin/bash
+# Restart the player when mpv stops responding.
+#
+# systemd's Restart=always only catches a process that EXITS. The failure seen
+# in the field is worse: a CMA allocation failure inside the V4L2 decoder
+# (bcm2835-codec: dma alloc failed) leaves mpv running with its threads in Ssl+,
+# IPC dead and the picture frozen. systemd sees a perfectly healthy service
+# while the screen is stuck, and nothing ever recovers it.
+set -uo pipefail
+
+. /etc/default/player
+
+STATE="${WATCHDOG_STATE:-/run/player-watchdog.state}"
+STRIKES_MAX="${WATCHDOG_STRIKES:-3}"
+
+log() { logger -t player-watchdog "$*"; echo "player-watchdog: $*" >&2; }
+
+[ "$STRIKES_MAX" != "0" ] || exit 0
+
+# Only police a unit that is supposed to be running. A deliberate stop must not
+# be undone, and it clears the strike count.
+if [ "$(systemctl is-active player.service 2>/dev/null)" != "active" ]; then
+    rm -f "$STATE"
+    exit 0
+fi
+
+ipc() {
+    printf '{"command":["get_property","%s"]}\n' "$1" \
+        | socat -T2 - "UNIX-CONNECT:${MPV_SOCKET}" 2>/dev/null \
+        | sed -n 's/.*"data":\([^,}]*\).*/\1/p'
+}
+
+strikes=0
+last_time=none
+last_pos=none
+if [ -r "$STATE" ]; then
+    read -r strikes last_time last_pos < "$STATE"
+fi
+case "$strikes" in ''|*[!0-9]*) strikes=0 ;; esac
+[ -n "${last_time:-}" ] || last_time=none
+[ -n "${last_pos:-}" ]  || last_pos=none
+
+now_time=""
+now_pos=""
+reason=""
+
+if [ ! -S "$MPV_SOCKET" ]; then
+    reason="no IPC socket"
+else
+    now_time="$(ipc playback-time)"
+    now_pos="$(ipc playlist-pos)"
+    if [ -z "$now_time" ]; then
+        reason="no reply on IPC socket"
+    elif [ "$(ipc pause)" = "true" ]; then
+        :   # paused on purpose - not a fault
+    elif [ "$now_time" = "$last_time" ] && [ "$now_pos" = "$last_pos" ]; then
+        # Both frozen. Either alone is not enough: a short clip can land on the
+        # same playback-time across polls, and a single-item playlist never
+        # changes position. The timer interval is deliberately not a round
+        # number so a looping clip cannot alias with it repeatedly.
+        reason="playback frozen at pos=${now_pos} t=${now_time}"
+    fi
+fi
+
+if [ -z "$reason" ]; then
+    printf '0 %s %s\n' "${now_time:-none}" "${now_pos:-none}" > "$STATE"
+    exit 0
+fi
+
+strikes=$((strikes + 1))
+printf '%s %s %s\n' "$strikes" "${now_time:-none}" "${now_pos:-none}" > "$STATE"
+log "unhealthy (${reason}); strike ${strikes}/${STRIKES_MAX}"
+
+if [ "$strikes" -ge "$STRIKES_MAX" ]; then
+    log "restarting player.service: ${reason}; CmaFree=$(awk '/CmaFree/{print $2}' /proc/meminfo)kB MemAvailable=$(awk '/MemAvailable/{print $2}' /proc/meminfo)kB"
+    rm -f "$STATE"
+    systemctl restart --no-block player.service
+fi
+exit 0
