@@ -181,14 +181,15 @@ venue.
 sudo ./build-docker.sh
 ```
 
-Output lands in `deploy/` as `image_<date>-pi-player.img.xz`.
+Output lands in `deploy/` as `image_<date>-pi-player-<board>.img.xz`, where
+`<board>` is `PLAYER_BOARD` from `config` (`pi4` or `pi3`).
 
 Resuming after a failure: pi-gen caches completed stages. `sudo CONTINUE=1
 ./build-docker.sh` picks up where it left off. If you changed anything in
 `stage-player`, delete its marker first so it re-runs:
 
 ```bash
-sudo rm -f work/pi-player/stage-player/SUCCESS
+sudo rm -f work/pi-player-${PLAYER_BOARD:-pi4}/stage-player/SUCCESS
 sudo CONTINUE=1 ./build-docker.sh
 ```
 
@@ -199,7 +200,7 @@ For a genuinely clean rebuild: `sudo rm -rf work deploy`.
 ## Step 5 — Flash
 
 ```bash
-xz -d deploy/image_*-pi-player.img.xz
+xz -d deploy/image_*-pi-player-*.img.xz     # check which board you picked
 sudo rpi-imager                    # "Use custom" → select the .img
 ```
 

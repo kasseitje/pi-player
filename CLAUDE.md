@@ -56,7 +56,7 @@ restoring it.
 **Iterate on the stage only** (minutes, not a full rebuild):
 
 ```bash
-sudo rm -f work/pi-player/stage-player/SUCCESS
+sudo rm -f work/pi-player-${PLAYER_BOARD:-pi4}/stage-player/SUCCESS
 sudo CONTINUE=1 ./build-docker.sh
 ```
 
@@ -168,6 +168,14 @@ Two pi-gen behaviours that make stage authoring counter-intuitive:
   Config files placed in the rootfs *are* honoured by that later update, which
   is why `03-cleanup` writes `/etc/apt/apt.conf.d/99-player-slim` rather than
   relying on deleting files.
+
+**`PLAYER_BOARD` in `config` is the one knob for target hardware.** It selects
+the decoder (`PLAYER_HWDEC`: `auto-safe` for pi4/pi5, `v4l2m2m-copy` for pi3)
+and sets `IMG_NAME="pi-player-${PLAYER_BOARD}"`, so the board is visible in the
+image filename and a Pi 3 image cannot be mistaken for the Pi 4 one. Because
+`WORK_DIR` is `work/${IMG_NAME}`, each board also gets its own build cache —
+switching target can never reuse the other board's cached rootfs. An
+unrecognised value aborts the build.
 
 **Architecture and Debian release come from the pi-gen git branch, not from
 `config`.** Setting `ARCH=`/`RELEASE=` there does nothing and warns. Use

@@ -7,7 +7,27 @@
 # Setting ARCH= or RELEASE= here does nothing useful and will trigger
 # "RELEASE does not match the intended option for this branch".
 
-IMG_NAME='pi-player'
+# Target board. Selects the video decoder AND tags the image name, so a flashed
+# card is identifiable at a glance and a Pi 3 image can never be mistaken for
+# the Pi 4 one that goes to the venue.
+#   pi4  also correct for a Pi 5
+#   pi3  Pi 3 A+/B/B+ - VideoCore IV has no usable auto hwdec path
+#
+# PLAYER_HWDEC MUST be exported: pi-gen `source`s this file and sub-stage scripts
+# run as child processes, so a plain assignment never reaches them. --hwdec on a
+# Pi 3 set to auto-safe falls back to SOFTWARE decode with no error at all:
+# 300% CPU and a steady climb to an OOM kill.
+PLAYER_BOARD='pi4'
+
+case "$PLAYER_BOARD" in
+	pi3) export PLAYER_HWDEC='v4l2m2m-copy' ;;
+	pi4) export PLAYER_HWDEC='auto-safe' ;;
+	*)   echo "config: PLAYER_BOARD must be pi3 or pi4 (got: '$PLAYER_BOARD')" >&2; exit 1 ;;
+esac
+
+# Board tag lands in the image name and, via WORK_DIR, gives each board its own
+# build cache - so switching target can never reuse the other board's rootfs.
+IMG_NAME="pi-player-${PLAYER_BOARD}"
 
 # Only build up to our custom stage. stage3/4/5 are the desktop stages and are
 # never touched, so no SKIP files are needed.
@@ -24,14 +44,6 @@ DISABLE_FIRST_BOOT_USER_RENAME=1
 # This suppresses the boot-partition seed files only - stage-player/03-cleanup
 # purges the packages, which pi-gen installs regardless of this flag.
 ENABLE_CLOUD_INIT=0
-
-# Hardware video decoding, applied to MPV_VO_OPTS by stage-player/01-player-files.
-# MUST be exported: pi-gen `source`s this file, and sub-stage scripts run as
-# child processes, so a plain assignment never reaches them.
-#   Pi 4 / Pi 5 -> auto-safe        Pi 3 -> v4l2m2m-copy
-# auto-safe on a Pi 3 falls back to software decode with no error: 300% CPU and
-# a steady climb to an OOM kill.
-export PLAYER_HWDEC='auto-safe'
 
 TARGET_HOSTNAME='pi-player'
 LOCALE_DEFAULT='en_GB.UTF-8'
