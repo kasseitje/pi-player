@@ -109,7 +109,8 @@ cp    /path/to/pi-player/config        ./config
 `README.md` and `host-tools/` are **not** part of the build. Keep them wherever
 you unpacked the scaffold; copying them into the pi-gen clone just adds
 untracked files to a git repo you will later want to pull. `host-tools/` runs on
-your workstation to prepare media before it ever reaches the Pi.
+your workstation: it prepares media before it ever reaches the Pi, and
+monitors the box once it is running.
 
 Your tree should now look like:
 
@@ -358,6 +359,131 @@ sudo systemctl start player-stats && journalctl -fu player-stats
 Never redirect `player-stats` to a file on the Pi itself — with an overlay
 rootfs every write is RAM. Pipe it over SSH, or use the journal, which is
 size-capped.
+
+**Piping the stats to your workstation.** `player-stats` writes plain lines to
+stdout and reads nothing from stdin, so SSH is the entire mechanism — the log
+file lives on your machine and the appliance writes nothing at all:
+
+```bash
+ssh pi@pi-player.local player-stats 30 | tee ~/pi-player-$(date +%F).log
+```
+
+`tee` so you watch it live *and* keep the file; use `>` alone if you only want
+the file. `pi-player.local` needs mDNS on your network — if it doesn't resolve,
+use the IP `player-osd-ip` overlays on the fallback loop.
+
+Add `-t` if you want Ctrl-C to stop the sampler immediately. Without a tty the
+remote process only notices the dead pipe on its *next* write, so it keeps
+sampling for up to one interval after you disconnect. The cost of `-t` is CRLF
+line endings, which is one `tr` away:
+
+```bash
+ssh -t pi@pi-player.local player-stats 30 | tr -d '\r' | tee ~/stats.log
+```
+
+For an overnight soak, keep the connection from being culled by whatever NAT
+sits between you and the venue, and reconnect if it dies anyway:
+
+```bash
+while :; do
+  ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=10 \
+      pi@pi-player.local player-stats 30
+  echo "# reconnected $(date -Is)"
+  sleep 5
+done | tee -a ~/pi-player-soak.log
+```
+
+`tee -a` is load-bearing: every reconnect re-enters the loop, and a plain `>`
+would truncate everything collected so far. Use a key, not a password — the loop
+will otherwise stop and wait for one at 03:00. The `#` marker lines make gaps in
+the record obvious afterwards; nothing downstream chokes on them.
+
+If `player-stats.service` is already running on the box, tail the journal
+instead — same lines, and the sampler survives your laptop closing:
+
+```bash
+ssh pi@pi-player.local 'journalctl -fu player-stats --output=cat' | tee ~/stats.log
+```
+
+`--output=cat` drops the syslog prefix so the lines match the ones above. Add
+`--since=-2h` to pull in what was already collected before you connected.
+
+**A live dashboard instead of a wall of text.** `host-tools/player-monitor.py`
+takes the same feed on stdin and repaints a single screen: current value,
+sparkline, and how far each number has drifted since the run started. Python
+stdlib only, nothing to install, and nothing runs on the Pi that wasn't already
+running:
+
+```bash
+ssh pi@pi-player.local player-stats 30 | ./host-tools/player-monitor.py
+ssh pi@pi-player.local player-stats 30 | ./host-tools/player-monitor.py --log soak.log
+```
+
+```
+pi-player   21:14:26   samples 59   run 29m00s
+
+  rss             215M  ▁▁▁▂▂▂▂▂▂▂▂▂▃▃▃▃▃▃▅▅▅▅▆▆███████  start 138  peak 215  Δ +77  (+159/h)
+  cpu              99%  ▅▄▃▃▂▅▁▃▄▁▅▅▁▄▁▁▇▁▄▆▅▇█▆▂▂▂█▁▃▂  min 88  max 99
+  cma free        208M  ████▄█████████▄▄▄▄▁▄▄▄██▄▄▄▄▁▁▁  start 210  peak 210  Δ -2  (-4/h)
+  mem avail       386M  ████▇▇▇▇▆▆▆▆▅▅▅▅▅▅▅▅▄▄▄▄▃▃▃▃▃▃▃  start 400  peak 400  Δ -14  (-29/h)
+  temp           57.6C  ▄▄▅▅▄▄▅▅▄▃▂▁▁▂▃▂▃▃▅▄▃▃▄▃▃▄▅▆▇▇▇  min 52.4  max 58.9
+  pos               74  ▁▁▂▂▂▂▃▃▃▃▄▄▄▄▄▄▄▄▄▄▅▅▅▅▅▅▅▅▅▅▅
+
+  hwdec: v4l2m2m-copy
+  throttled: 0x0
+  file:  074_bloementapijt.mp4
+```
+
+The `(+159/h)` on `rss` is the number to read first — it is what separates
+warm-up from a leak, and it needs two minutes of run before it appears at all.
+`cma free` goes red below 64 MB and `temp` red at 80 C, and the screen grows a
+line per condition when something is actually wrong:
+
+```
+  ! cma_free 31M - decoder stall territory; a frozen picture with the service still 'active' looks like this
+  ! hwdec=no - software decode; expect ~300% cpu, RSS climbing and an OOM kill within the hour
+  ! throttled=0x50005 - it has throttled at some point (the flag latches, so this may be hours old)
+  ! 1 sample(s) with mpv not running - it restarted
+```
+
+Ctrl-C prints a first/last/min/max/rate summary for every metric — the same
+summary you get piping a saved log back through it with `--plain`:
+
+```bash
+./host-tools/player-monitor.py --plain < soak.log
+```
+
+Fields are read by name, so a sampler that grows a field displays it without
+edits here; `swap` hides itself while it is flat zero and reappears the moment
+it isn't. Metrics the kernel doesn't expose arrive as `-` and are skipped rather
+than plotted as `0` — on a non-Pi kernel `CmaFree` is absent, and `0` would be a
+very different and much more alarming answer.
+
+**Reading the log back.** The worst CMA reading over the whole run is the number
+that predicts a decoder stall, and it is one pipeline away:
+
+```bash
+grep -o 'cma_free=[0-9]*' ~/pi-player-soak.log | cut -d= -f2 | sort -n | head -1
+```
+
+For a plot, the `key=value` format turns into CSV without any parsing library
+(timestamp, RSS, CPU, CMA free, temperature):
+
+```bash
+sed -n 's/^\(.\{19\}\) .*rss=\([0-9]*\)M.* cpu=\([0-9]*\)%.* cma_free=\([0-9-]*\)M.* temp=\([0-9.-]*\)C.*/\1,\2,\3,\4,\5/p' \
+  ~/pi-player-soak.log
+```
+
+Lines where mpv was not running have no fields to match and drop out — count
+them separately with `grep -c 'mpv not running'`, because that is the watchdog
+having restarted the player and it matters more than any of the numbers.
+
+For an unattended one-shot from your own cron, `--once` exits after a single
+sample:
+
+```bash
+ssh pi@pi-player.local player-stats --once >> ~/pi-player-hourly.log
+```
 
 Poke mpv directly over IPC:
 
