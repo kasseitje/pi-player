@@ -1,9 +1,14 @@
-# pi-player — a pi-gen appliance image for looping video + images on a Pi 4
+# pi-player
+
+A pi-gen appliance image for looping video + images on a Pi 3/4
 
 Boots straight to `mpv` on bare DRM/KMS. No desktop, no login prompt, no X11 or
 Wayland compositor competing for DRM master. Plug in a USB stick with media and
 it takes over within a second or two; pull the stick and it falls back to
 whatever was baked into the image. No reboot either way.
+
+This is the build and operations guide. `CLAUDE.md` is the design record — why
+each decision was made, the dead ends already walked, and the unfinished work.
 
 ---
 
@@ -16,9 +21,15 @@ whatever was baked into the image. No reboot either way.
 | `/usr/local/bin/player-reload` | Hot-reloads mpv over its JSON IPC socket |
 | `/usr/local/bin/usb-media-attach` | Mounts a stick read-only, rebuilds, reloads |
 | `/usr/local/bin/usb-media-detach` | Unmounts, reverts to internal media, reloads |
+| `/usr/local/bin/player-osd-ip` | Overlays hostname + IP on the fallback loop |
+| `/usr/local/bin/player-watchdog` | Restarts the player if mpv stops responding |
+| `/usr/local/bin/player-stats` | Diagnostic sampler (RSS, CPU, CMA, cache, throttling) |
 | `/etc/default/player` | All tunables (image duration, VO flags, paths) |
 | `/etc/systemd/system/player.service` | The player, bound to tty1 with a logind session |
 | `/etc/systemd/system/usb-media@.service` | Per-device unit, lifetime bound to the stick |
+| `/etc/systemd/system/player-osd-ip.timer` | Refreshes the IP overlay every 30s |
+| `/etc/systemd/system/player-watchdog.timer` | Liveness poll every 37s |
+| `/etc/systemd/system/player-stats.service` | Installed but **not** enabled — start it by hand |
 | `/etc/udev/rules.d/99-usb-media.rules` | Hands USB filesystems to the unit above |
 | `/opt/player/media/` | Baked-in fallback media |
 | `/media/usb/` | Mount point for the stick |
@@ -116,12 +127,28 @@ pi-gen/
     │   ├── 00-run.sh              (host: installs files into the rootfs)
     │   ├── 01-run-chroot.sh       (chroot: enables units, sets boot target)
     │   └── files/…
-    └── 02-boot-config/00-run.sh   (host: patches cmdline.txt + config.txt)
+    ├── 02-boot-config/00-run.sh   (host: patches cmdline.txt + config.txt)
+    └── 03-cleanup/00-run-chroot.sh (chroot: purges cloud-init, slims apt)
 ```
 
 **Edit `config` before building.** At minimum change `FIRST_USER_PASS`. Set
 `WPA_ESSID`/`WPA_PASSWORD` only if the unit needs Wi-Fi; a signage box that
 never phones home is one less failure mode.
+
+**Set `PLAYER_BOARD` to match the hardware.** It is the one knob for the target
+board: it picks the video decoder *and* tags the image name, so a Pi 3 card can
+never be confused with the Pi 4 one that goes to the venue.
+
+```bash
+PLAYER_BOARD='pi4'      # also correct for a Pi 5
+PLAYER_BOARD='pi3'      # Pi 3 A+/B/B+
+```
+
+`pi3` selects `--hwdec=v4l2m2m-copy`; `pi4` selects `--hwdec=auto-safe`. Getting
+this wrong on a Pi 3 is silent and expensive — see Step 8. Any custom variable
+you add to `config` yourself **must be `export`ed**: pi-gen `source`s the file
+and sub-stage scripts run as child processes, so a plain assignment never
+reaches them.
 
 `STAGE_LIST='stage0 stage1 stage2 stage-player'` means the desktop stages
 (3/4/5) never run — no SKIP files needed.
@@ -247,7 +274,38 @@ re-running with a different `IMAGE_DURATION`.
 
 Uniformity matters more than it sounds: mismatched resolutions or frame rates
 between playlist items cause a visible mode-change flash on the display each
-time mpv advances.
+time mpv advances. Check a folder before trusting it — resolution alone is not
+enough, `level` and `r_frame_rate` differ between a camera clip and a prepared
+still even at the same size:
+
+```bash
+find ~/raw-media -name '*.mp4' -print0 | while IFS= read -r -d '' f; do
+  ffprobe -v error -select_streams v:0 -show_entries \
+    stream=codec_name,profile,level,width,height,pix_fmt,r_frame_rate,sample_aspect_ratio,field_order,refs,has_b_frames \
+    -of csv=p=0 "$f"
+done | sort | uniq -c | sort -rn
+```
+
+One line out means uniform. More than one means the odd files need re-running
+through `prepare-media.sh`.
+
+**`FIT` controls what happens to anything that is not 16:9** — which is most of
+a photo archive:
+
+| `FIT` | Result |
+|---|---|
+| `contain` (default) | fits inside, `BG` bars baked into the frame — nothing lost, but a portrait photo is mostly black bar |
+| `cover` | fills the screen, crops the overflow — **edges are lost**, brutal on portrait |
+| `blur` | blurred zoomed copy of the image fills the screen, uncropped image on top — no bars, nothing lost |
+
+```bash
+FIT=blur ./host-tools/prepare-media.sh ~/raw-media /media/MY-USB-STICK
+```
+
+`blur` is the right default for a mixed archive going back to 1993: portrait
+phone shots and scanned 4:3 prints keep every pixel, and the screen still fills.
+Use `cover` only if you know the content is all landscape and you accept losing
+the edges.
 
 Animated GIFs keep their animation, repeated to fill `IMAGE_DURATION`. (GIF
 needs `-ignore_loop 0` rather than `-loop 1` — the latter is an image2 demuxer
@@ -279,12 +337,26 @@ Plug in a stick and watch it get picked up:
 journalctl -f -t usb-media-attach -t player-playlist -t player-reload
 ```
 
-Confirm hardware decode is live (Pi 4 should manage 1080p without breaking a
-sweat, unlike the Pi 3):
+Confirm hardware decode is actually live — ask mpv rather than grepping logs,
+because a fallback to software is silent:
 
 ```bash
-journalctl -u player.service -b | grep -i "hardware decoding"
+echo '{"command":["get_property","hwdec-current"]}' | socat - /run/player/mpv.sock
 ```
+
+Watch the box's health over time. `cma_free` is the number that predicts a
+decoder stall; `cpu` around one core (~90%) means hardware decode is working,
+~300% means it is not:
+
+```bash
+player-stats 30                 # one line every 30s, Ctrl-C to stop
+player-stats --once             # single sample
+sudo systemctl start player-stats && journalctl -fu player-stats
+```
+
+Never redirect `player-stats` to a file on the Pi itself — with an overlay
+rootfs every write is RAM. Pipe it over SSH, or use the journal, which is
+size-capped.
 
 Poke mpv directly over IPC:
 
@@ -302,24 +374,52 @@ to apply.
 
 ```bash
 IMAGE_DURATION="12"                  # seconds per still
-MPV_EXTRA_OPTS="--shuffle"           # randomise order
 MEDIA_EXTENSIONS="mp4 jpg png"       # narrow what counts as media
+SHOW_IP_ON_FALLBACK="0"              # hide the hostname/IP overlay
+WATCHDOG_STRIKES="0"                 # disable the hang watchdog
 ```
+
+**Do not empty `MPV_EXTRA_OPTS`.** It ships with demuxer caps that are load-
+bearing on a memory-constrained board:
+
+```bash
+MPV_EXTRA_OPTS="--demuxer-max-bytes=32MiB --demuxer-max-back-bytes=8MiB"
+```
+
+mpv reads ahead until its packet queue is full. A 5-second still-turned-clip
+never fills it; a multi-minute video does, and the ~150 MiB default lands as a
+single step in RSS that never comes back — on a 1 GB Pi 3 that was the
+difference between a 490 MB peak and a 246 MB one. Add `--shuffle` here if you
+want it; don't replace the line.
 
 If you ever see the libplacebo `Found no suitable device` error (Vulkan probing,
 which VideoCore never satisfies on older boards), `MPV_VO_OPTS` already pins
 `--gpu-api=opengl` to skip it.
 
-**Testing on a Pi 3?** The arm64 image boots there unchanged, but two defaults
-are Pi 4 assumptions. `--hwdec=auto-safe` silently falls back to software decode
-on VideoCore IV (300% CPU), so pin it:
+**Testing on a Pi 3?** Set `PLAYER_BOARD='pi3'` in `config` and rebuild — do not
+hand-edit `/etc/default/player`, because that edit dies at the next flash and the
+failure is completely silent. `--hwdec=auto-safe` falls back to *software* decode
+on VideoCore IV: 300% CPU, RSS climbing ~55 MiB/min, and an OOM kill within the
+hour. Nothing logs an error. Confirm which path is live with:
 
 ```bash
-MPV_VO_OPTS="--vo=gpu --gpu-api=opengl --gpu-context=drm --hwdec=v4l2m2m-copy"
+echo '{"command":["get_property","hwdec-current"]}' | socat - /run/player/mpv.sock
 ```
 
-And `cma-256` in `config.txt` is generous against a Pi 3's fixed 1 GB — drop it
-to `cma-128`. Neither change is needed on a Pi 4.
+`"v4l2m2m-copy"` is correct; `"no"` means it fell back.
+
+**Leave `cma-256` alone.** Earlier versions of this guide suggested dropping to
+`cma-128` on a Pi 3 to free general RAM. That advice was written while hwdec was
+silently falling back to software, where CMA sits unused. With hardware decode
+actually working the V4L2 decoder needs that pool, and `cma-128` exhausts it:
+
+```
+bcm2835-codec bcm2835-codec: dma alloc of size 3133440 failed
+```
+
+mpv does not error or fall back on that — it just **hangs**, with the picture
+frozen and its threads still in `Ssl+`. Watch `CmaFree` in `/proc/meminfo`, not
+`MemFree`: `MemAvailable` can read a healthy 400 MB while CMA is at 120 kB.
 
 ---
 
@@ -337,6 +437,36 @@ the SD card. The USB stick is already mounted read-only by
 `usb-media-attach`, so pulling that mid-playback is safe too. Remember to
 disable the overlay temporarily whenever you want to change baked-in media or
 config.
+
+**The overlay is not free.** Its upper layer is tmpfs, so every write to the
+rootfs consumes RAM and is never reclaimed until reboot. Cap the journal before
+enabling it on a 1 GB board, and confirm nothing else writes to `/`:
+
+```bash
+printf '[Journal]\nStorage=volatile\nRuntimeMaxUse=16M\n' \
+  | sudo tee /etc/systemd/journald.conf.d/10-player.conf
+sudo du -xh --max-depth=2 /var | sort -h | tail -20
+```
+
+Also verify it actually took — `overlayroot=tmpfs` on the kernel command line is
+*not* proof, the kernel logs it as an unknown parameter and something in
+userspace has to act on it:
+
+```bash
+mount | grep ' / '        # "overlay" = active, "ext4" = not
+```
+
+**A hung player recovers by itself.** `player-watchdog.timer` polls mpv every
+37 s and restarts the service after three consecutive failures — either a silent
+IPC socket, or `playback-time` and `playlist-pos` both frozen. This matters
+because `Restart=always` only catches a process that *exits*: a stalled V4L2
+decoder leaves mpv running with the screen frozen, and systemd sees a perfectly
+healthy service. Set `WATCHDOG_STRIKES=0` to disable it while debugging, so a
+stall is preserved for inspection instead of being restarted away.
+
+**The maintenance console is tty2**, not tty1. tty1 belongs to the player and
+`NAutoVTs=0` stops logind spawning gettys anywhere, so Ctrl+Alt+F2 is the login
+prompt and F3–F6 are deliberately blank.
 
 Worth checking on-site before the event:
 
@@ -363,6 +493,11 @@ and that shows up as dropped frames rather than an error message.
 | Stick ignored | No filesystem signature, or it's on the boot disk | `lsblk -f`; the attach script deliberately skips the boot disk |
 | Screen blanks after minutes | `consoleblank` | Confirm `consoleblank=0` survived in `/boot/firmware/cmdline.txt` |
 | Playlist doesn't update on insert | udev → systemd handoff | `udevadm monitor --property` while inserting; `systemctl status 'usb-media@*'` |
+| Picture frozen, service reports `active (running)` | mpv hung, not crashed — usually a CMA allocation failure in the V4L2 decoder | `journalctl -k -b \| grep bcm2835-codec`; check `CmaFree` in `/proc/meminfo`; restore `cma-256`. The watchdog restarts it after ~2 min |
+| mpv killed by the OOM killer | Read `swapents`, not `rss`, in the OOM dump — a paged-out process looks tiny | Confirm `hwdec-current` is not `"no"`, and that `MPV_EXTRA_OPTS` still has the demuxer caps |
+| Ctrl+Alt+F2 gives a blank console | `NAutoVTs=0` stops logind spawning gettys | tty2 has a static getty; F3–F6 are blank by design. `systemctl enable --now getty@tty3` if you want another |
+| 300% CPU and RSS climbing fast | `--hwdec=auto-safe` fell back to software decode | Rebuild with `PLAYER_BOARD='pi3'`; verify with `hwdec-current` |
+| Service dies for good after a few restarts | `StartLimitIntervalSec` must live in `[Unit]` — systemd ignores it in `[Service]` and reinstates the default 5-starts-in-10s limit | Already fixed in the shipped unit; check `systemctl cat player.service` if you edited it |
 
 ---
 
@@ -387,3 +522,17 @@ unreachable.
 Read-only means a stick pulled mid-playback can't leave a dirty filesystem, and
 pairs with the overlay rootfs so the whole appliance survives arbitrary power
 loss.
+
+**Why there is a watchdog at all.** `Restart=always` is not a liveness check —
+it only catches a process that *exits*. Every genuinely bad failure seen on this
+hardware left mpv *running*: a failed video buffer allocation leaves it stalled
+with the picture frozen, and systemd reports the service as perfectly healthy.
+`player-watchdog` polls mpv instead and restarts it after three strikes.
+
+**Why nothing the service runs may prompt.** `player.service` gives mpv tty1 as
+its standard input, so any command that asks a question blocks there forever
+with no visible error and the player never starts. Anything the service calls
+must use `mv -f`, `rm -f`, `cp -f`.
+
+Full rationale for these, plus the bugs already found and fixed, is in
+`CLAUDE.md`.
