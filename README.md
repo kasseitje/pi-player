@@ -228,16 +228,34 @@ Relative paths resolve against the stick; absolute paths work too; `#` lines and
 CRLF endings are tolerated; entries pointing at files that don't exist are
 dropped with a log line rather than breaking playback.
 
-`host-tools/prepare-media.sh` normalises a folder of source clips to uniform
-1080p30 H.264 with audio stripped:
+`host-tools/prepare-media.sh` normalises everything — clips *and* stills — to
+uniform 1080p30 H.264 with audio stripped, and writes a `playlist.m3u`:
 
 ```bash
-./host-tools/prepare-media.sh ~/raw-clips /media/MY-USB-STICK
+./host-tools/prepare-media.sh ~/raw-media /media/MY-USB-STICK
+IMAGE_DURATION=8 CRF=22 ./host-tools/prepare-media.sh ~/raw-media /media/STICK
 ```
+
+**Stills are converted to 5-second video clips, not copied through.** Decoding
+stills via mpv's V4L2/GL path on a Pi produces green or black frames for
+progressive, CMYK, grayscale, 16-bit and alpha images, and mpv has no per-format
+hwdec switch to work around it. Encoding them as video removes that failure mode
+outright. It also gives every playlist entry a real container duration, which
+the multi-screen scheduler needs, and lets you set per-image durations by
+re-running with a different `IMAGE_DURATION`.
 
 Uniformity matters more than it sounds: mismatched resolutions or frame rates
 between playlist items cause a visible mode-change flash on the display each
 time mpv advances.
+
+Animated GIFs keep their animation, repeated to fill `IMAGE_DURATION`. (GIF
+needs `-ignore_loop 0` rather than `-loop 1` — the latter is an image2 demuxer
+option and aborts on a `.gif`.)
+
+Files that ffmpeg cannot decode are retried through ImageMagick (`sudo apt
+install imagemagick`), which handles CMYK JPEGs and odd PNG bit depths. Anything
+still failing is listed at the end and the script exits non-zero — nothing is
+silently dropped from the loop.
 
 ---
 
