@@ -420,32 +420,44 @@ ssh pi@pi-player.local 'journalctl -fu player-stats --output=cat' | tee ~/stats.
 `--since=-2h` to pull in what was already collected before you connected.
 
 **A live dashboard instead of a wall of text.** `host-tools/player-monitor.py`
-takes the same feed on stdin and repaints a single screen: current value,
-sparkline, and how far each number has drifted since the run started. Python
-stdlib only, nothing to install, and nothing runs on the Pi that wasn't already
+takes the same feed on stdin and repaints a btop-style screen: one bordered box
+per metric, each with a multi-row area graph coloured by value. Python stdlib
+only, nothing to install, and nothing runs on the Pi that wasn't already
 running:
 
 ```bash
 ssh pi@pi-player.local player-stats 30 | ./host-tools/player-monitor.py
 ssh pi@pi-player.local player-stats 30 | ./host-tools/player-monitor.py --log soak.log
+ssh pi@pi-player.local player-stats 30 | ./host-tools/player-monitor.py --braille
 ```
 
 ```
-pi-player   21:14:26   samples 59   run 29m00s
-
-  rss             215M  ▁▁▁▂▂▂▂▂▂▂▂▂▃▃▃▃▃▃▅▅▅▅▆▆███████  start 138  peak 215  Δ +77  (+159/h)
-  cpu              99%  ▅▄▃▃▂▅▁▃▄▁▅▅▁▄▁▁▇▁▄▆▅▇█▆▂▂▂█▁▃▂  min 88  max 99
-  cma free        208M  ████▄█████████▄▄▄▄▁▄▄▄██▄▄▄▄▁▁▁  start 210  peak 210  Δ -2  (-4/h)
-  mem avail       386M  ████▇▇▇▇▆▆▆▆▅▅▅▅▅▅▅▅▄▄▄▄▃▃▃▃▃▃▃  start 400  peak 400  Δ -14  (-29/h)
-  temp           57.6C  ▄▄▅▅▄▄▅▅▄▃▂▁▁▂▃▂▃▃▅▄▃▃▄▃▃▄▅▆▇▇▇  min 52.4  max 58.9
-  pos               74  ▁▁▂▂▂▂▃▃▃▃▄▄▄▄▄▄▄▄▄▄▅▅▅▅▅▅▅▅▅▅▅
-
-  hwdec: v4l2m2m-copy
-  throttled: 0x0
-  file:  074_bloementapijt.mp4
+╭─ pi-player ───────────────────────────────────────── 03:00:09 · 399 samples · 3h26m ─╮
+│ hwdec     v4l2m2m-copy                                                               │
+│ throttled 0x0                                                                        │
+│ file      1993_optreden-na.mp4                                                       │
+╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ rss ───────────────────────────────────────────────────────────────────────── 374M ─╮
+│                                                       ▂▃▃█                           │
+│                                                      ▄████                           │
+│ ▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂▂█████▇              ▁▂▂▂▂▂▂▂▂▂▂ │
+╰─ start 140M  peak 418M  Δ +234M  +68M/h ─────────────────────────────────────────────╯
+╭─ cma free ───────────────────────────────────────────────────────────────────── 64M ─╮
+│ ▆▅ ▂▆▆▄▅▁▃▆▃█▂▆▅▄▆▆▅▃▆▃▂▇▂▅▃▂ ▇▆█▅▅▇▅▇▄▅█▅▆▄▃▆▆▄▅▄▁▇▄▅▅█▆▆   ▂▁▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄ │
+│ ██▇███████████████████████████████████████████████████████▁  ███████████████████████ │
+│ ███████████████████████████████████████████████████████████ ▅▂██████████████████████ │
+╰─ start 121M  peak 122M  Δ -57M  -17M/h ──────────────────────────────────────────────╯
 ```
 
-The `(+159/h)` on `rss` is the number to read first — it is what separates
+Graphs are coloured green→red by where each sample sits in that metric's own
+range, and inverted for `cma free` and `mem avail` where *low* is the bad end.
+Boxes and graph height adapt to the window: on a short terminal the graphs
+shrink to one row and the least interesting metrics (`pos`, `cache`, `swap`)
+drop off the bottom first. `--rows N` forces a height, and `--braille` packs two
+samples into every column for twice the visible history — it needs a font with
+braille coverage, which most terminal fonts have.
+
+The `+68M/h` on `rss` is the number to read first — it is what separates
 warm-up from a leak, and it needs two minutes of run before it appears at all.
 `cma free` goes red below 64 MB and `temp` red at 80 C, and the screen grows a
 line per condition when something is actually wrong:

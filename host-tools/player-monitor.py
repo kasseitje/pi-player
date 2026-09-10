@@ -16,6 +16,10 @@ cache=31M temp=57.5C hwdec=v4l2m2m-copy pos=2 throttled=0x0 file=003_clip.mp4
 Fields are read by name, not position, so a sampler that grows a new key shows
 it without changes here, and one that drops a key simply stops displaying it.
 Stdlib only - nothing to install.
+
+The display is btop-style: one bordered box per metric, each with a multi-row
+area graph coloured by value. Boxes and graph height adapt to the terminal, and
+metrics are dropped from the bottom of a priority list when the window is short.
 """
 
 import argparse
@@ -25,57 +29,68 @@ import sys
 from collections import deque
 from datetime import datetime
 
-SPARK = "▁▂▃▄▅▆▇█"
+# Eighths, for a multi-row area graph. Index 0 is empty, 8 is a full cell.
+BLOCKS = " ▁▂▃▄▅▆▇█"
+# 2x4 dot cells give four times the vertical resolution of a block, at the cost
+# of needing a font with braille coverage.
+BRAILLE_BASE = 0x2800
+BRAILLE_DOTS = ((0x01, 0x08), (0x02, 0x10), (0x04, 0x20), (0x40, 0x80))
 
-# Numeric metrics, in display order: key -> (label, unit, decimals).
-# Anything else numeric in the feed is appended after these under its own name.
+# Box drawing.
+TL, TR, BL, BR, HZ, VT = "╭", "╮", "╰", "╯", "─", "│"
+
+# Numeric metrics: key -> (label, unit, decimals, direction, priority).
+# direction: "up" = high is bad, "down" = low is bad, "flat" = neither.
+# priority orders which boxes survive on a short terminal (lower shows first).
 KNOWN = {
-    "rss":       ("rss",       "M", 0),
-    "swap":      ("swap",      "M", 0),
-    "cpu":       ("cpu",       "%", 0),
-    "cma_free":  ("cma free",  "M", 0),
-    "mem_avail": ("mem avail", "M", 0),
-    "cache":     ("cache",     "M", 0),
-    "temp":      ("temp",      "C", 1),
-    "pos":       ("pos",       "",  0),
+    "rss":       ("rss",       "M", 0, "up",   1),
+    "cma_free":  ("cma free",  "M", 0, "down", 2),
+    "cpu":       ("cpu",       "%", 0, "up",   3),
+    "temp":      ("temp",      "C", 1, "up",   4),
+    "mem_avail": ("mem avail", "M", 0, "down", 5),
+    "swap":      ("swap",      "M", 0, "up",   6),
+    "cache":     ("cache",     "M", 0, "flat", 7),
+    "pos":       ("pos",       "",  0, "flat", 8),
 }
-# Shown as text, not plotted.
 TEXT_KEYS = ("hwdec", "throttled", "file")
-# Metrics where the interesting question is "how far has it moved", not "what
-# is it right now".
 DRIFT_KEYS = ("rss", "swap", "mem_avail", "cma_free")
 
-# Thresholds worth shouting about. CmaFree is the number that predicts a decoder
-# stall, and it bottoms out while MemAvailable still looks healthy; the SoC
-# starts soft-throttling at 80 C.
+# CmaFree is the number that predicts a decoder stall, and it bottoms out while
+# MemAvailable still looks healthy; the SoC soft-throttles from 80 C.
 CMA_WARN = 64.0
 TEMP_WARN = 80.0
+
+# Green through yellow to red, in the xterm-256 cube. Truecolor would be
+# smoother but 256 is what every terminal worth supporting actually has.
+RAMP = [46, 82, 118, 154, 190, 226, 220, 214, 208, 202, 196]
+COOL = 39      # neutral metrics
+DIMC = 244     # borders and footnotes
 
 TIMESTAMP = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) (.*)$")
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
-class Colour:
+class Theme:
     def __init__(self, enabled):
         self.on = enabled
 
-    def __call__(self, text, code):
-        return f"\x1b[{code}m{text}\x1b[0m" if self.on else text
+    def fg(self, text, code):
+        return f"\x1b[38;5;{code}m{text}\x1b[0m" if self.on else text
 
-    def dim(self, t):
-        return self(t, "2")
+    def bold(self, text):
+        return f"\x1b[1m{text}\x1b[0m" if self.on else text
 
-    def bold(self, t):
-        return self(t, "1")
+    def dim(self, text):
+        return self.fg(text, DIMC)
 
-    def red(self, t):
-        return self(t, "31")
-
-    def yellow(self, t):
-        return self(t, "33")
-
-    def green(self, t):
-        return self(t, "32")
+    def ramp(self, text, t, direction):
+        """Colour by where the value sits in its own range, 0..1."""
+        if direction == "flat":
+            return self.fg(text, COOL)
+        if direction == "down":
+            t = 1.0 - t
+        idx = max(0, min(len(RAMP) - 1, int(t * (len(RAMP) - 1))))
+        return self.fg(text, RAMP[idx])
 
 
 def parse(line):
@@ -91,7 +106,6 @@ def parse(line):
         ts = datetime.strptime(match.group(1), "%Y-%m-%d %H:%M:%S")
     except ValueError:
         return None
-
     fields = {}
     for token in match.group(2).split():
         key, sep, value = token.partition("=")
@@ -112,17 +126,6 @@ def number(value):
         return None
 
 
-def spark(values, width):
-    values = list(values)[-width:]
-    if not values:
-        return ""
-    lo, hi = min(values), max(values)
-    if hi - lo < 1e-9:
-        return SPARK[0] * len(values)
-    step = (hi - lo) / (len(SPARK) - 1)
-    return "".join(SPARK[int((v - lo) / step)] for v in values)
-
-
 def human(seconds):
     seconds = int(seconds)
     h, rem = divmod(seconds, 3600)
@@ -130,8 +133,55 @@ def human(seconds):
     return f"{h}h{m:02d}m" if h else f"{m}m{s:02d}s"
 
 
+def visible(text):
+    return len(ANSI.sub("", text))
+
+
+def area_graph(values, cols, rows, braille=False):
+    """Multi-row area graph occupying exactly `cols` visible columns.
+
+    Returns `rows` lists of (char, level 0..1). The level travels with each cell
+    so the caller can colour a column by its own height, which is what gives
+    btop's graphs their gradient. A braille cell is 2 dots wide, so it carries
+    two samples per column and shows twice the history in the same space.
+    """
+    per_col = 2 if braille else 1
+    vals = list(values)[-cols * per_col:]
+    if not vals:
+        return [[(" ", 0.0)] * cols for _ in range(rows)]
+
+    lo, hi = min(vals), max(vals)
+    if hi - lo < 1e-9:
+        # A flat series still deserves a visible line rather than an empty box.
+        lo, hi = lo - 0.5, hi + 0.5
+    span = hi - lo
+    norm = [(v - lo) / span for v in vals]
+
+    out = []
+    if braille:
+        cells = rows * 4
+        pairs = [norm[i:i + 2] for i in range(0, len(norm), 2)]
+        for r in range(rows - 1, -1, -1):
+            line = []
+            for pair in pairs:
+                bits = 0
+                for col, value in enumerate(pair):
+                    filled = value * cells - r * 4
+                    for dot in range(4):
+                        if filled >= dot + 0.5:
+                            bits |= BRAILLE_DOTS[3 - dot][col]
+                line.append((chr(BRAILLE_BASE + bits), max(pair)))
+            out.append(line)
+    else:
+        for r in range(rows - 1, -1, -1):
+            line = [(BLOCKS[max(0, min(8, int(round(v * rows * 8 - r * 8))))], v)
+                    for v in norm]
+            out.append(line)
+    return [[(" ", 0.0)] * (cols - len(line)) + line for line in out]
+
+
 class Monitor:
-    def __init__(self, colour):
+    def __init__(self, theme, braille=False, rows=None):
         self.hist = {}
         self.first = {}
         self.peak = {}
@@ -141,19 +191,19 @@ class Monitor:
         self.gaps = 0
         self.first_ts = None
         self.last_ts = None
-        self.c = colour
-        self.depth = 400   # enough history for a full-width sparkline
+        self.t = theme
+        self.braille = braille
+        self.forced_rows = rows
+        self.depth = 800
 
     def add(self, ts, fields):
         self.samples += 1
         if self.first_ts is None:
             self.first_ts = ts
         self.last_ts = ts
-
         if not fields:
             self.gaps += 1
             return
-
         for key, raw in fields.items():
             value = None if key in TEXT_KEYS else number(raw)
             if value is None:
@@ -165,18 +215,16 @@ class Monitor:
             self.trough[key] = min(self.trough.get(key, value), value)
 
     def order(self):
-        keys = ([k for k in KNOWN if k in self.hist]
-                + sorted(k for k in self.hist if k not in KNOWN))
+        keys = sorted((k for k in self.hist if k in KNOWN), key=lambda k: KNOWN[k][4])
+        keys += sorted(k for k in self.hist if k not in KNOWN)
         # A metric flat at zero all run is noise, not information - swap on a
-        # healthy board is the whole reason for this. It reappears by itself
+        # healthy board is the whole reason for this. It comes back by itself
         # the moment it goes non-zero.
         return [k for k in keys if self.peak[k] or self.trough[k]]
 
     def rate_per_hour(self, key):
         """Change per hour over the run - the number that separates a leak from
         warm-up. None until the run is long enough for it to mean anything."""
-        # Playlist position wraps to 0 at the end of the loop, so a rate is
-        # nonsense for it.
         if key == "pos" or key not in self.hist or self.first_ts is None:
             return None
         span = (self.last_ts - self.first_ts).total_seconds()
@@ -203,61 +251,107 @@ class Monitor:
             out.append(f"{self.gaps} sample(s) with mpv not running - it restarted")
         return out
 
+    # ---- drawing ----------------------------------------------------------
+
+    def _top(self, title, right, width):
+        """╭─ title ────────────── right ─╮ occupying exactly `width` columns."""
+        t = self.t
+        left = f"{TL}{HZ} {title} "
+        tail = f" {right} {HZ}{TR}" if right else f"{HZ}{TR}"
+        fill = max(0, width - len(left) - visible(tail))
+        out = t.dim(TL + HZ + " ") + t.bold(t.fg(title, COOL)) + " " + t.dim(HZ * fill)
+        if right:
+            out += " " + right + " "
+        return out + t.dim(HZ + TR)
+
+    def _bottom(self, note, width):
+        t = self.t
+        if not note:
+            return t.dim(BL + HZ * (width - 2) + BR)
+        note = note[: max(0, width - 8)]
+        left = f"{BL}{HZ} {note} "
+        fill = max(0, width - len(left) - 2)
+        return t.dim(left + HZ * fill + HZ + BR)
+
+    def _row(self, content, pad, width):
+        """│ content …padding… │"""
+        t = self.t
+        return t.dim(VT) + " " + content + " " * max(0, pad) + " " + t.dim(VT)
+
+    def _box(self, key, width, rows):
+        t = self.t
+        label, unit, decimals, direction, _ = KNOWN.get(key, (key, "", 0, "flat", 99))
+        values = self.hist[key]
+        now = values[-1]
+
+        value_txt = f"{now:.{decimals}f}{unit}"
+        lo, hi = self.trough[key], self.peak[key]
+        pos = 0.0 if hi - lo < 1e-9 else (now - lo) / (hi - lo)
+        if key == "cma_free" and now < CMA_WARN:
+            headline = t.fg(value_txt, 196)
+        elif key == "temp" and now >= TEMP_WARN:
+            headline = t.fg(value_txt, 196)
+        else:
+            headline = t.bold(t.ramp(value_txt, pos, direction))
+
+        inner = width - 4
+        lines = [self._top(label, headline, width)]
+        for row in area_graph(values, inner, rows, self.braille):
+            cells = "".join(t.ramp(ch, lvl, direction) if ch != " " else " "
+                            for ch, lvl in row)
+            lines.append(self._row(cells, inner - len(row), width))
+
+        if key in DRIFT_KEYS:
+            note = f"start {self.first[key]:.0f}{unit}  peak {self.peak[key]:.0f}{unit}  Δ {now - self.first[key]:+.0f}{unit}"
+            rate = self.rate_per_hour(key)
+            if rate is not None:
+                note += f"  {rate:+.0f}{unit}/h"
+        elif key == "pos":
+            note = f"playlist position  min {lo:.0f}  max {hi:.0f}"
+        else:
+            note = f"min {lo:.{decimals}f}{unit}  max {hi:.{decimals}f}{unit}"
+        lines.append(self._bottom(note, width))
+        return lines
+
     def render(self):
-        c = self.c
-        cols = shutil.get_terminal_size((100, 30)).columns
-        lines = [c.bold(f"pi-player   {self.last_ts:%H:%M:%S}   "
-                        f"samples {self.samples}   "
-                        f"run {human((self.last_ts - self.first_ts).total_seconds())}"),
-                 ""]
+        t = self.t
+        size = shutil.get_terminal_size((100, 30))
+        width, height = max(48, size.columns), size.lines
+        lines = []
 
-        keys = self.order()
-        if not keys:
-            lines.append(c.dim("  waiting for a sample with fields..."))
-            return lines
-
-        label_w = max(len(KNOWN.get(k, (k,))[0]) for k in keys)
-        # Everything but the sparkline is fixed width; the spark takes the rest.
-        spark_w = max(8, min(60, cols - label_w - 48))
-
-        for key in keys:
-            label, unit, decimals = KNOWN.get(key, (key, "", 0))
-            values = self.hist[key]
-            now = values[-1]
-
-            note = ""
-            if key in DRIFT_KEYS:
-                note = (f"start {self.first[key]:.0f}  peak {self.peak[key]:.0f}  "
-                        f"Δ {now - self.first[key]:+.0f}")
-                rate = self.rate_per_hour(key)
-                if rate is not None:
-                    note += f"  ({rate:+.0f}/h)"
-            elif key == "temp":
-                note = f"min {self.trough[key]:.1f}  max {self.peak[key]:.1f}"
-            elif key != "pos":
-                note = f"min {self.trough[key]:.0f}  max {self.peak[key]:.0f}"
-
-            paint = str
-            if key == "cma_free":
-                paint = c.red if now < CMA_WARN else c.green
-            elif key == "temp" and now >= TEMP_WARN:
-                paint = c.red
-
-            # Pad before colouring: ANSI codes are invisible but count as width.
-            value_text = f"{now:.{decimals}f}{unit}".rjust(9)
-            lines.append(f"  {label:<{label_w}}  {paint(value_text)}  "
-                         f"{spark(values, spark_w):<{spark_w}}  {c.dim(note)}")
-
-        lines.append("")
+        run = human((self.last_ts - self.first_ts).total_seconds())
+        right = t.dim(f"{self.last_ts:%H:%M:%S} · {self.samples} samples · {run}")
+        lines.append(self._top("pi-player", right, width))
         for key in TEXT_KEYS:
             if key in self.text:
                 value = self.text[key]
-                if key == "file":
-                    value = value[: max(20, cols - 14)]
-                lines.append(f"  {c.dim(key + ':'):<14} {value}")
+                inner = width - 4
+                val = value[: max(0, inner - 10)]
+                lines.append(self._row(t.dim(f"{key:<10}") + val,
+                                       inner - 10 - len(val), width))
+        lines.append(self._bottom("", width))
 
-        for text in self.alerts():
-            lines.append("  " + c.yellow("! " + text))
+        keys = self.order()
+        if not keys:
+            lines.append(t.dim("  waiting for a sample with fields..."))
+            return lines
+
+        alerts = self.alerts()
+        # Each box costs 2 borders + graph rows. Fit as many as the window
+        # allows, tallest graphs first, then drop the least important metrics.
+        budget = height - len(lines) - len(alerts) - 2
+        rows = self.forced_rows
+        if rows is None:
+            rows = 4
+            while rows > 1 and (len(keys) * (rows + 2)) > budget:
+                rows -= 1
+        while keys and (len(keys) * (rows + 2)) > budget and len(keys) > 1:
+            keys.pop()
+
+        for key in keys:
+            lines.extend(self._box(key, width, rows))
+        for text in alerts:
+            lines.append(t.fg("  ! " + text[: width - 6], 214))
         return lines
 
     def summary(self):
@@ -281,24 +375,28 @@ class Monitor:
 
 def main():
     ap = argparse.ArgumentParser(
-        description="Live dashboard for a player-stats feed on stdin.")
+        description="Live btop-style dashboard for a player-stats feed on stdin.")
     ap.add_argument("--log", metavar="FILE",
                     help="also append the raw feed here (on this machine)")
     ap.add_argument("--plain", action="store_true",
                     help="no redraw; echo lines through and summarise at the end")
     ap.add_argument("--no-colour", action="store_true", help="disable ANSI colour")
+    ap.add_argument("--braille", action="store_true",
+                    help="finer graphs using braille cells (needs a font with them)")
+    ap.add_argument("--rows", type=int, metavar="N",
+                    help="graph height per box (default: fit the window)")
     args = ap.parse_args()
 
     tty = sys.stdout.isatty()
-    colour = Colour(tty and not args.no_colour)
-    monitor = Monitor(colour)
+    theme = Theme(tty and not args.no_colour)
+    monitor = Monitor(theme, braille=args.braille, rows=args.rows)
     plain = args.plain or not tty
 
     log = open(args.log, "a", buffering=1) if args.log else None
     painted = 0
 
     if not plain:
-        sys.stdout.write("\x1b[2J\x1b[H")
+        sys.stdout.write("\x1b[2J\x1b[H\x1b[?25l")   # clear, home, hide cursor
         sys.stdout.flush()
 
     try:
@@ -323,8 +421,6 @@ def main():
                 print(line, flush=True)
                 continue
 
-            # Repaint in place: home the cursor, clear each line as it is
-            # rewritten, then erase whatever the previous frame left below.
             frame = monitor.render()
             buf = ["\x1b[H"]
             buf += ["\x1b[2K" + text + "\n" for text in frame]
@@ -337,6 +433,9 @@ def main():
     finally:
         if log:
             log.close()
+        if not plain:
+            sys.stdout.write("\x1b[?25h")           # restore the cursor
+            sys.stdout.flush()
 
     print("\n" + "\n".join(monitor.summary()))
 
