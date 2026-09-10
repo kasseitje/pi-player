@@ -62,17 +62,23 @@ sudo CONTINUE=1 ./build-docker.sh
 board keeps a separate build cache — switching target cannot reuse the other
 board's rootfs.
 
-Media preparation on the workstation (`FIT=blur` is the right default for a
+Media preparation on the workstation (`--fit blur` is the right default for a
 mixed photo archive; README Step 6 has the full table):
 
 ```bash
-FIT=blur ./host-tools/prepare-media.sh SRCDIR DSTDIR
-KEEP_NAMES=1 PLAYLIST=0 ./host-tools/prepare-media.sh SRC DST   # preserve names/order
+./host-tools/prepare-media.sh --fit blur SRCDIR DSTDIR
+./host-tools/prepare-media.sh --resolution 720p SRCDIR DSTDIR        # Pi 3
+./host-tools/prepare-media.sh --keep-names --no-playlist SRC DST     # preserve names/order
 ```
 
-Env overrides: `IMAGE_DURATION` (5) `WIDTH` (1920) `HEIGHT` (1080) `FPS` (30)
-`CRF` (20) `PRESET` (medium) `BG` (black) `PLAYLIST` (1) `KEEP_NAMES` (0)
-`FIT` (contain) `BLUR_SIGMA` (8).
+Options (defaults in brackets): `-r/--resolution` (1080p; also 720p or WxH)
+`-d/--duration` (5) `-f/--fit` (contain) `--fps` (30) `-c/--crf` (20)
+`--preset` (medium) `--bg` (black) `--blur-sigma` (8) `--keep-names`
+`--no-playlist`. Parsed with util-linux `getopt`, so long options are required
+to work. **These were environment variables until 2026-09-10**; the script now
+warns on stderr if a legacy name is still set rather than silently ignoring it.
+Note `IMAGE_DURATION` still exists as an unrelated *device-side* setting in
+`/etc/default/player` — same name, different scope.
 
 On the booted Pi:
 
@@ -206,12 +212,13 @@ All tunables live in `/etc/default/player`: `INTERNAL_MEDIA_DIR`,
 ### 3. Workstation — `host-tools/`
 
 Never installed on the Pi. `prepare-media.sh` normalises clips *and stills* to
-1920x1080@30, H.264 High L4.1, yuv420p, SAR 1:1, no audio, fixed 2s GOP. Stills
-are **composited onto a canvas**, not `pad`ded — `pad` discards alpha. Under
-`FIT=blur` the rate conversion happens *before* the `split`, so both branches
-stay frame-locked; after the `overlay` they drift and cost a frame per clip.
-Files ffmpeg cannot decode are retried through ImageMagick (`-colorspace sRGB`),
-which handles CMYK JPEGs. GIFs longer than `IMAGE_DURATION` are **truncated**.
+one canvas (`--resolution`, default 1920x1080; 720p for a Pi 3) at H.264 High
+L4.1, yuv420p, SAR 1:1, no audio, fixed 2s GOP. Stills are **composited onto a
+canvas**, not `pad`ded — `pad` discards alpha. Under `--fit blur` the rate
+conversion happens *before* the `split`, so both branches stay frame-locked;
+after the `overlay` they drift and cost a frame per clip. Files ffmpeg cannot
+decode are retried through ImageMagick (`-colorspace sRGB`), which handles CMYK
+JPEGs. GIFs longer than `--duration` are **truncated**.
 
 `make-title-card.sh` renders the fallback at
 `stage-player/01-player-files/files/media/000_fallback.mp4`. Text goes through
@@ -258,7 +265,8 @@ with no per-format hwdec switch. Confirmed upstream in *decode*, not the display
 path — it reproduces identically under `cage`/Wayland. Encoding stills as clips
 removes the failure mode, gives every entry a real container duration (needed by
 the multi-screen scheduler) and eliminates the mode-change flash. Consequence:
-`IMAGE_DURATION` only matters for stills that reach the stick *unconverted*.
+the still duration only matters for images that reach the stick *unconverted*
+(`IMAGE_DURATION` in `/etc/default/player`, not the host-side `--duration`).
 
 **The USB stick is mounted read-only** (`ro,noatime,nosuid,nodev,noexec`). It is
 content, never a write target; a stick pulled mid-playback cannot leave a dirty

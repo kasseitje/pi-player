@@ -258,12 +258,23 @@ CRLF endings are tolerated; entries pointing at files that don't exist are
 dropped with a log line rather than breaking playback.
 
 `host-tools/prepare-media.sh` normalises everything — clips *and* stills — to
-uniform 1080p30 H.264 with audio stripped, and writes a `playlist.m3u`:
+uniform, audio-free H.264 at one resolution, and writes a `playlist.m3u`:
 
 ```bash
 ./host-tools/prepare-media.sh ~/raw-media /media/MY-USB-STICK
-IMAGE_DURATION=8 CRF=22 ./host-tools/prepare-media.sh ~/raw-media /media/STICK
+./host-tools/prepare-media.sh --resolution 720p --fit blur ~/raw-media /media/STICK
+./host-tools/prepare-media.sh -d 8 -c 22 ~/raw-media /media/STICK
+./host-tools/prepare-media.sh --help
 ```
+
+**`--resolution` is the setting that has to match the board.** 1080p is the
+default and is right for a Pi 4. A Pi 3 cannot sustain it through the
+`v4l2m2m-copy` path: over an 8.5-hour soak every long clip stayed on screen for
+~1.78× its real duration — a 28-minute clip occupying 51 minutes of the loop —
+with `cma_free` touching 0 MB. CPU sat at ~90% of one core and `hwdec-current`
+stayed `v4l2m2m-copy` throughout, so this is memory bandwidth in the copy-back
+path, not a decode fallback. `--resolution 720p` halves that bandwidth and
+halves the CMA cost per frame (1.4 MB vs 3.0 MB), which addresses both at once.
 
 **Stills are converted to 5-second video clips, not copied through.** Decoding
 stills via mpv's V4L2/GL path on a Pi produces green or black frames for
@@ -271,7 +282,7 @@ progressive, CMYK, grayscale, 16-bit and alpha images, and mpv has no per-format
 hwdec switch to work around it. Encoding them as video removes that failure mode
 outright. It also gives every playlist entry a real container duration, which
 the multi-screen scheduler needs, and lets you set per-image durations by
-re-running with a different `IMAGE_DURATION`.
+re-running with a different `--duration`.
 
 Uniformity matters more than it sounds: mismatched resolutions or frame rates
 between playlist items cause a visible mode-change flash on the display each
@@ -290,17 +301,17 @@ done | sort | uniq -c | sort -rn
 One line out means uniform. More than one means the odd files need re-running
 through `prepare-media.sh`.
 
-**`FIT` controls what happens to anything that is not 16:9** — which is most of
+**`--fit` controls what happens to anything that is not 16:9** — which is most of
 a photo archive:
 
-| `FIT` | Result |
+| `--fit` | Result |
 |---|---|
-| `contain` (default) | fits inside, `BG` bars baked into the frame — nothing lost, but a portrait photo is mostly black bar |
+| `contain` (default) | fits inside, `--bg` bars baked into the frame — nothing lost, but a portrait photo is mostly black bar |
 | `cover` | fills the screen, crops the overflow — **edges are lost**, brutal on portrait |
 | `blur` | blurred zoomed copy of the image fills the screen, uncropped image on top — no bars, nothing lost |
 
 ```bash
-FIT=blur ./host-tools/prepare-media.sh ~/raw-media /media/MY-USB-STICK
+./host-tools/prepare-media.sh --fit blur ~/raw-media /media/MY-USB-STICK
 ```
 
 `blur` is the right default for a mixed archive going back to 1993: portrait
@@ -308,7 +319,7 @@ phone shots and scanned 4:3 prints keep every pixel, and the screen still fills.
 Use `cover` only if you know the content is all landscape and you accept losing
 the edges.
 
-Animated GIFs keep their animation, repeated to fill `IMAGE_DURATION`. (GIF
+Animated GIFs keep their animation, repeated to fill `--duration`. (GIF
 needs `-ignore_loop 0` rather than `-loop 1` — the latter is an image2 demuxer
 option and aborts on a `.gif`.)
 

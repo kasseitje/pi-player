@@ -1,8 +1,8 @@
 #!/bin/bash
 # Normalise a folder of source clips and stills into uniform, audio-free
-# 1080p H.264 files suitable for looping on a Pi.
+# H.264 files suitable for looping on a Pi.
 #
-#   ./prepare-media.sh SRCDIR DSTDIR
+#   ./prepare-media.sh [OPTIONS] SRCDIR DSTDIR
 #
 # Stills become fixed-duration video clips. That is deliberate: decoding stills
 # through mpv's V4L2/GL path on a Pi produces green or black frames for
@@ -11,42 +11,140 @@
 # entirely, gives every playlist entry a real container duration, and stops the
 # resolution-mismatch flash when mpv advances between items.
 #
-# Overridable via the environment:
-#   IMAGE_DURATION=5  WIDTH=1920  HEIGHT=1080  FPS=30  CRF=20  PRESET=medium
-#   BG=black          PLAYLIST=1  KEEP_NAMES=0
-#   FIT=contain|cover|blur        BLUR_SIGMA=8
-#
-# FIT controls what happens to content whose aspect ratio is not the canvas:
-#   contain  fit inside, bars in BG            (default; nothing is lost)
-#   cover    fill the canvas, crop the overflow (edges ARE lost - brutal on
-#            portrait photos, which lose most of their height)
-#   blur     fill the canvas with a blurred, zoomed copy of the image itself and
-#            lay the whole uncropped image on top (no bars, nothing lost)
+# --resolution picks the canvas. 1080p is the default and is what a Pi 4 should
+# get. A Pi 3 cannot sustain 1080p through the v4l2m2m copy-back path: measured
+# over an 8.5 h soak, every long clip stayed on screen for ~1.78x its real
+# duration (~14 fps against a 25 fps container) with CMA touching 0 MB. 720p
+# halves both the memory bandwidth and the CMA cost per frame - use it on a Pi 3.
 set -uo pipefail
 
-SRC="${1:?usage: prepare-media.sh SRCDIR DSTDIR}"
-DST="${2:?usage: prepare-media.sh SRCDIR DSTDIR}"
+PROG="$(basename "$0")"
 
-IMAGE_DURATION="${IMAGE_DURATION:-5}"
-WIDTH="${WIDTH:-1920}"
-HEIGHT="${HEIGHT:-1080}"
-FPS="${FPS:-30}"
-CRF="${CRF:-20}"
-PRESET="${PRESET:-medium}"
-BG="${BG:-black}"
-PLAYLIST="${PLAYLIST:-1}"      # also write playlist.m3u
-KEEP_NAMES="${KEEP_NAMES:-0}"  # 1 = keep original names, no NNN_ prefix
-FIT="${FIT:-contain}"          # contain | cover | blur
-BLUR_SIGMA="${BLUR_SIGMA:-8}"  # only used by FIT=blur
+usage() {
+    cat <<EOF
+usage: ${PROG} [OPTIONS] SRCDIR DSTDIR
+
+Normalise clips and stills into uniform, audio-free H.264 for a Pi player.
+
+Options:
+  -r, --resolution SPEC   720p, 1080p, or WIDTHxHEIGHT   (default: 1080p)
+                          720p is required for a Pi 3; 1080p suits a Pi 4.
+  -d, --duration SEC      seconds per still              (default: 5)
+  -f, --fit MODE          contain | cover | blur         (default: contain)
+      --fps N             output frame rate              (default: 30)
+  -c, --crf N             x264 quality, lower is better  (default: 20)
+      --preset NAME       x264 preset                    (default: medium)
+      --bg COLOUR         letterbox colour for 'contain' (default: black)
+      --blur-sigma N      blur strength for --fit blur   (default: 8)
+      --keep-names        keep original names, no NNN_ prefix
+      --no-playlist       do not write playlist.m3u
+  -h, --help              this message
+
+FIT controls what happens to content whose aspect ratio is not the canvas:
+  contain  fit inside, bars in --bg             (default; nothing is lost)
+  cover    fill the canvas, crop the overflow   (edges ARE lost - brutal on
+           portrait photos, which lose most of their height)
+  blur     fill the canvas with a blurred, zoomed copy of the image itself and
+           lay the whole uncropped image on top (no bars, nothing lost)
+
+Examples:
+  ${PROG} ~/raw-media /media/MY-USB-STICK
+  ${PROG} --resolution 720p --fit blur ~/raw-media /media/STICK
+  ${PROG} -d 8 -c 22 ~/raw-media /media/STICK
+EOF
+}
+
+# util-linux getopt. The plain POSIX one cannot do long options and would
+# silently mangle the command line rather than reject it.
+getopt --test >/dev/null
+if [ "$?" -ne 4 ]; then
+    echo "${PROG}: GNU enhanced getopt required (util-linux)" >&2
+    exit 1
+fi
+
+# These used to be the entire interface. Warn rather than ignore silently -
+# a config that quietly stops applying is exactly the failure this project
+# keeps getting bitten by.
+for legacy in IMAGE_DURATION WIDTH HEIGHT FPS CRF PRESET BG PLAYLIST \
+              KEEP_NAMES FIT BLUR_SIGMA; do
+    if [ -n "${!legacy:-}" ]; then
+        echo "${PROG}: warning: \$${legacy} is set but no longer read; use the" \
+             "matching option (see --help)" >&2
+    fi
+done
+
+PARSED=$(getopt \
+    --options 'r:d:f:c:h' \
+    --longoptions 'resolution:,duration:,fit:,fps:,crf:,preset:,bg:,blur-sigma:,keep-names,no-playlist,help' \
+    --name "$PROG" -- "$@") || { usage >&2; exit 2; }
+eval set -- "$PARSED"
+
+RESOLUTION=1080p
+IMAGE_DURATION=5
+FIT=contain
+FPS=30
+CRF=20
+PRESET=medium
+BG=black
+BLUR_SIGMA=8
+PLAYLIST=1
+KEEP_NAMES=0
+
+while true; do
+    case "$1" in
+        -r|--resolution) RESOLUTION="$2";     shift 2 ;;
+        -d|--duration)   IMAGE_DURATION="$2"; shift 2 ;;
+        -f|--fit)        FIT="$2";            shift 2 ;;
+        --fps)           FPS="$2";            shift 2 ;;
+        -c|--crf)        CRF="$2";            shift 2 ;;
+        --preset)        PRESET="$2";         shift 2 ;;
+        --bg)            BG="$2";             shift 2 ;;
+        --blur-sigma)    BLUR_SIGMA="$2";     shift 2 ;;
+        --keep-names)    KEEP_NAMES=1;        shift ;;
+        --no-playlist)   PLAYLIST=0;          shift ;;
+        -h|--help)       usage; exit 0 ;;
+        --)              shift; break ;;
+        *)               echo "${PROG}: internal parse error at '$1'" >&2; exit 2 ;;
+    esac
+done
+
+if [ "$#" -ne 2 ]; then
+    echo "${PROG}: expected SRCDIR and DSTDIR, got $# argument(s)" >&2
+    usage >&2
+    exit 2
+fi
+SRC="$1"
+DST="$2"
+
+case "$RESOLUTION" in
+    720p)  WIDTH=1280; HEIGHT=720  ;;
+    1080p) WIDTH=1920; HEIGHT=1080 ;;
+    *x*)   WIDTH="${RESOLUTION%%x*}"; HEIGHT="${RESOLUTION##*x}" ;;
+    *) echo "${PROG}: --resolution must be 720p, 1080p or WIDTHxHEIGHT (got: $RESOLUTION)" >&2
+       exit 1 ;;
+esac
+
+num() { printf '%s' "$1" | grep -qE '^[0-9]+$'; }
+for pair in "WIDTH $WIDTH" "HEIGHT $HEIGHT" "--fps $FPS" "--crf $CRF" \
+            "--duration $IMAGE_DURATION" "--blur-sigma $BLUR_SIGMA"; do
+    set -- $pair
+    num "$2" || { echo "${PROG}: $1 must be a whole number (got: $2)" >&2; exit 1; }
+done
+# yuv420p subsamples by two in both directions, so odd dimensions fail the
+# encode with an unhelpful error deep inside the filter graph.
+if [ $((WIDTH % 2)) -ne 0 ] || [ $((HEIGHT % 2)) -ne 0 ]; then
+    echo "${PROG}: resolution must be even in both axes (got: ${WIDTH}x${HEIGHT})" >&2
+    exit 1
+fi
 
 case "$FIT" in
     contain|cover|blur) ;;
-    *) echo "FIT must be contain, cover or blur (got: $FIT)" >&2; exit 1 ;;
+    *) echo "${PROG}: --fit must be contain, cover or blur (got: $FIT)" >&2; exit 1 ;;
 esac
 
-[ -d "$SRC" ] || { echo "no such source directory: $SRC" >&2; exit 1; }
-command -v ffmpeg  >/dev/null || { echo "ffmpeg not found" >&2; exit 1; }
-command -v ffprobe >/dev/null || { echo "ffprobe not found" >&2; exit 1; }
+[ -d "$SRC" ] || { echo "${PROG}: no such source directory: $SRC" >&2; exit 1; }
+command -v ffmpeg  >/dev/null || { echo "${PROG}: ffmpeg not found" >&2; exit 1; }
+command -v ffprobe >/dev/null || { echo "${PROG}: ffprobe not found" >&2; exit 1; }
 HAVE_IM=0
 command -v convert >/dev/null && HAVE_IM=1
 
