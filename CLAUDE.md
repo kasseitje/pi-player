@@ -225,6 +225,29 @@ JPEGs. GIFs longer than `--duration` are **truncated**.
 ffmpeg's `textfile=`, not `text=`; the latter breaks on apostrophes. Keep the
 duration a multiple of 2.5 s or the loop seam shows.
 
+**The card ships at 720p** (2026-09-12; it was 1080p before). It loops for hours
+whenever no stick is present, and the V4L2 decoder sizes its CMA pool per frame
+regardless of how trivial the content is — 3.0 MB per 1920x1088 NV12 buffer
+against 1.4 MB at 1280x736. `-r/--resolution` takes the same spellings as
+`prepare-media.sh` and **defaults to 720p**, not 1080p. The layout is authored
+on a 1080p canvas and scaled to the target height by `px()`, so constants stay
+in proportion and nothing needs re-tuning per resolution; the baked-in card
+cannot follow `PLAYER_BOARD`, since it is a pre-rendered artifact in the repo.
+
+Two traps when re-rendering, both environmental:
+
+- **Fonts.** Poppins lives at `/usr/share/fonts/truetype/gfonts/poppins/*.woff`
+  (FreeType reads WOFF; `fontfile=` takes it directly). The script used to point
+  at `google-fonts/Poppins-*.ttf`, which does not exist here, so the `[ -f ]`
+  guards fell through to DejaVu and the card would have silently re-rendered in
+  the wrong typeface. The latin subset has no Medium weight — Regular stands in.
+  `drawtext`'s `font=` (fontconfig) is **not** a workaround: this ffmpeg rejects
+  `style=` as an unknown option.
+- **Gradient.** This ffmpeg's `gradients` filter draws the radial falloff
+  differently from whatever rendered the original card — verified by rendering
+  at 1080p and diffing against the committed file: glyph runs land at identical
+  offsets, the background does not. Cosmetic, and it will follow any re-render.
+
 ## Non-obvious constraints
 
 **DRM master needs a real VT *and* a logind session.** Hence `PAMName=login` +
@@ -319,8 +342,11 @@ filesystem. `usb-media-attach` refuses any device on the boot disk.
 - New scripts must read new variables as `${VAR:-default}` — `player-run` runs
   under `set -u`, so a bare `$NEW_VAR` aborts the player on any box whose
   `/etc/default/player` predates the change.
-- Media entering the playlist must match 1920x1080@30, H.264 High L4.1,
-  yuv420p, SAR 1:1, no audio, 2s GOP.
+- Media entering the playlist must be uniform in canvas and match the board —
+  720p for a Pi 3, and currently 720p everywhere, including the baked-in
+  fallback card. The rest of the profile is fixed regardless of resolution:
+  30 fps, H.264 High L4.1, yuv420p, SAR 1:1, no audio, 2s GOP. Mismatched sizes
+  within one playlist cause a visible mode-change flash on each advance.
 
 ## Pi 3 vs Pi 4
 

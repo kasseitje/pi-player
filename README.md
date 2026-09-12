@@ -183,19 +183,41 @@ mkdir -p stage-player/01-player-files/files/media
 cp ~/clips/fallback.mp4 stage-player/01-player-files/files/media/
 ```
 
-A title card is already baked in at `files/media/000_fallback.mp4`. To re-render
-it with different text or a different logo:
+A title card is already baked in at `files/media/000_fallback.mp4`, rendered at
+**720p**. To re-render it with different text or a different logo:
 
 ```bash
-./host-tools/make-title-card.sh out.mp4 host-tools/kasseitje-logo-plate.png \
+./host-tools/make-title-card.sh --resolution 720p \
+  out.mp4 host-tools/kasseitje-logo-plate.png \
   "Steek je USB-stick in" \
   "FAT32 of exFAT — video's en foto's in de hoofdmap" \
   "GEEN MEDIA GEVONDEN" "Afspelen start automatisch"
 ```
 
+`--resolution` takes the same `720p` / `1080p` / `WIDTHxHEIGHT` spellings as
+`prepare-media.sh` and defaults to 720p. **It matters more here than the file
+size suggests**: a static gradient is nearly free on bitrate, but the V4L2
+decoder still allocates its CMA buffer pool at the frame size (3.0 MB per
+1920x1088 NV12 buffer against 1.4 MB at 1280x736), and this card is what loops
+for hours whenever no stick is present. Match it to the board — and to the
+`--resolution` you prepared the USB media with, so the fallback→USB transition
+does not reconfigure the decoder for a different frame size.
+
+The layout is authored on a 1080p canvas and scaled to the target height, so
+every size and offset keeps its proportion; nothing needs re-tuning per
+resolution.
+
 Pass `""` for the logo to render without one. Keep the duration a multiple of
 2.5s — the eyebrow pulses on that period and any other length makes the loop
 seam visible.
+
+Two things to know before re-rendering, both environment rather than code. The
+script loads Poppins from `/usr/share/fonts/truetype/gfonts/poppins/*.woff`
+(FreeType reads WOFF directly) and falls back to DejaVu if that is missing — so
+check the output actually came out in Poppins. And this ffmpeg's `gradients`
+filter draws the radial background with a slightly stronger falloff than
+whatever rendered the committed card, so the backdrop shifts a little on any
+re-render. Text, fonts, logo and layout are unaffected.
 
 With nothing here the player idles on a black screen until a stick appears —
 functional, but a title card is friendlier when something goes wrong at the
